@@ -68,6 +68,7 @@ SVG = """<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inks
     <path id="heart" style="fill:#e8505b" d="M 40,30 C 40,15 20,10 15,25 C 10,40 30,55 40,65 C 50,55 70,40 65,25 C 60,10 40,15 40,30 Z"/>
     <rect id="box" x="100" y="20" width="50" height="35" rx="4" style="fill:#3d7bf2" transform="rotate(10 125 37)"/>
     <text id="label" x="20" y="120">Hi</text>
+    <rect id="framed" x="20" y="130" width="30" height="12" style="fill:#ffd23f;stroke:#1e3a8a;stroke-width:2"/>
     <g id="logo"><rect id="l1" x="120" y="90" width="12" height="30" style="fill:#3d7bf2"/><circle id="l2" cx="150" cy="100" r="9" style="fill:#e0457b"/></g>
   </g>
 </svg>
@@ -190,6 +191,26 @@ def test_editor_window():
     check(p.returncode == 0 and ok, "editor window applies every section, in document units", p.stderr[-300:] or str(fx)[:300])
     style = source.get("style") or ""
     check("fill:#2f9e8f" in style and "opacity:0.8" in style, "style section sets the shape's fill and opacity", style)
+
+    # The color picker lives inside the window: open it, pick a color, apply.
+    out10 = os.path.join(tmp, "10.svg")
+    p = run_window({"color_picker": "fill", "pick": "#7b61ff", "apply": True}, ["--id=" + res_id], out2, out10)
+    src_style = etree.parse(out10).xpath("//*[@id='%s']//svg:path[@class='v3d-source']" % res_id, namespaces=ns)[0].get("style")
+    check(p.returncode == 0 and not p.stderr.strip() and "fill:#7b61ff" in src_style, "color picker opens in the window and applies",
+          p.stderr[-300:] or src_style)
+
+    # Style › Stroke: a shape's own stroke carries into 3D; None removes it from the 3D object and the shape.
+    out11, out12 = os.path.join(tmp, "11.svg"), os.path.join(tmp, "12.svg")
+    p = run_window({"apply": True, "set": {"steps": 0}}, ["--id=framed"], src, out11)
+    framed = etree.parse(out11).xpath("//svg:g[@data-v3d]", namespaces=ns)[0]
+    fx = json.loads(framed.get("data-v3d"))
+    check(p.returncode == 0 and fx.get("edges") == "outline" and fx.get("edge_color") == "#1e3a8a" and abs(fx["edge_width"] - 2) < 1e-6,
+          "a shape's stroke becomes its 3D outline", str({k: fx.get(k) for k in ("edges", "edge_color", "edge_width")}))
+    p = run_window({"apply": True, "set": {"stroke": None}}, ["--id=" + framed.get("id")], out11, out12)
+    framed = etree.parse(out12).xpath("//*[@id='%s']" % framed.get("id"), namespaces=ns)[0]
+    style = framed.find("{http://www.w3.org/2000/svg}path[@class='v3d-source']").get("style")
+    check(p.returncode == 0 and json.loads(framed.get("data-v3d"))["edges"] == "none" and "stroke:none" in style,
+          "stroke None removes the outline and the shape's stroke", style)
 
     # Shared scene light: changing the light on one object relights every 3D object; switched off, only the selection.
     box_id = [k for k in results if k != res_id][0]

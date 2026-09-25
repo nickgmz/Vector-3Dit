@@ -423,6 +423,28 @@ class Vector3Dit(inkex.EffectExtension):
                 fx[key] = value
         return fx, light
 
+    @staticmethod
+    def scale_of(elem):
+        t = elem.composed_transform()
+        return math.sqrt(abs(t.a * t.d - t.b * t.c)) or 1.0
+
+    def stroke_settings(self, src):
+        """A plain shape's own stroke becomes the 3D object's outline."""
+        style = src.specified_style()
+        stroke = style.get("stroke")
+        if not stroke or str(stroke) == "none" or str(stroke).startswith("url("):
+            return {}
+        color = color_hex(stroke)
+        sw = str(style.get("stroke-width", "1"))
+        try:
+            width = float(sw)  # unitless: already user units
+        except ValueError:
+            width = self.svg.unittouu(sw)
+        width *= self.scale_of(src)
+        if not color or width <= 0:
+            return {}
+        return {"edges": "outline", "edge_color": color, "edge_width": width}
+
     def editor_window(self):
         """Extensions › Vector 3Dit › 3D Editor…: every setting in one window with a trackball and a live preview."""
         plan, _ = self.plan()
@@ -441,7 +463,7 @@ class Vector3Dit(inkex.EffectExtension):
         defaults["kind"] = "extrude"  # plain shapes start as an extrusion
         items = []
         for src, res, subs, pivot in plan:
-            base = self.stored_settings(res) if res is not None else {}
+            base = self.stored_settings(res) if res is not None else self.stroke_settings(src)
             fill = base.pop("fill", None) if res is not None else material_fill
             base = dict(defaults, **base)
             base["light"] = dict(defaults["light"], **(base.get("light") or {}))
@@ -507,6 +529,13 @@ class Vector3Dit(inkex.EffectExtension):
                 material = None
             if "opacity" in touched:
                 src.style["opacity"] = E.fmt(opacity, 3)
+            if touched & {"edges", "edge_color", "edge_width"}:  # the shape keeps its stroke, also after Remove 3D
+                fx = settings_for(item, state, touched)
+                if fx.get("edges", "none") == "none":
+                    src.style["stroke"] = "none"
+                else:
+                    src.style["stroke"] = fx["edge_color"]
+                    src.style["stroke-width"] = E.fmt(fx["edge_width"] / max(1e-9, self.scale_of(src)), 4)
             self.render_one(src, item["res"], item["subs"], settings_for(item, state, touched), material, item["pivot"])
         light_keys = [k for k in touched if k.startswith("light_")]
         if state.get("shared_light", True) and light_keys:

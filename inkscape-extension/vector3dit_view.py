@@ -11,6 +11,7 @@ own icons, so no cairo bindings are needed (they are broken in some Inkscape
 builds on Windows).
 """
 
+import colorsys
 import json
 import math
 import os
@@ -149,6 +150,20 @@ CSS = ("""
 .v3d checkbutton label { color: %(text2)s; }
 .v3d scrollbar { background-color: transparent; border: none; }
 .v3d scrollbar slider { background-color: %(line2)s; min-width: 6px; border-radius: 3px; }
+.v3d-pop label { color: %(text2)s; font-size: 12px; }
+.v3d-pop .cp-title { color: %(text)s; font-weight: 600; }
+.v3d-pop entry { background-color: %(panel2)s; background-image: none; border: 1px solid %(line2)s; border-radius: 6px; color: %(text)s;
+                 font-family: %(mono)s; font-size: 12px; min-height: 26px; box-shadow: none; }
+.v3d-pop entry:focus { border-color: %(accent)s; }
+.v3d-pop scale.hue trough { background-image: linear-gradient(to right, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000);
+                            background-color: transparent; border: none; border-radius: 5px; min-height: 10px; }
+.v3d-pop scale.hue highlight { background: none; border: none; }
+.v3d-pop scale slider { background-color: %(text)s; background-image: none; border: 2px solid %(panel)s; border-radius: 50%%;
+                        box-shadow: 0 0 0 1px %(line2)s; min-width: 14px; min-height: 14px; margin: -4px; }
+.v3d-pop .cp-sw { background: none; border: none; box-shadow: none; padding: 1px; min-width: 0; min-height: 0; border-radius: 6px; }
+.v3d-pop .cp-sw:hover { background-color: %(panel3)s; }
+.v3d-pop .btn { background-color: %(panel2)s; border: 1px solid %(line2)s; border-radius: 7px; padding: 0 9px; min-height: 26px; }
+.v3d-pop .btn label { color: %(text)s; }
 .v3d .axis-x { color: %(x)s; } .v3d .axis-y { color: %(y)s; } .v3d .axis-z { color: %(z)s; }
 """ % dict(T, font=FONT, mono=MONO)).encode("utf-8")
 
@@ -349,7 +364,11 @@ def material_ball(mat, c, size=24):
             % (SVG_NS, size, size, size, size, g, r, r, r, r, r, r, paint, extra))
 
 
-def chip_svg(color, size=20):
+def chip_svg(color, size=20, none=False):
+    if none:
+        return ('<svg %s width="%d" height="%d"><rect x="0.5" y="0.5" width="%d" height="%d" rx="5" fill="%s" stroke="%s"/>'
+                '<path d="M4 %dL%d 4" stroke="#ff7b7b" stroke-width="2" stroke-linecap="round"/></svg>'
+                % (SVG_NS, size, size, size - 1, size - 1, T["panel2"], T["line2"], size - 4, size - 4))
     if not color:
         return ('<svg %s width="%d" height="%d"><rect x="0.5" y="0.5" width="%d" height="%d" rx="5" fill="%s" stroke="%s" '
                 'stroke-dasharray="2 2"/></svg>' % (SVG_NS, size, size, size - 1, size - 1, T["panel3"], T["muted"]))
@@ -450,6 +469,162 @@ class LightSphere(Gtk.EventBox):
             self.image.set_from_pixbuf(light_sphere_pixbuf(self.SIZE, *key))
 
 
+PALETTE = ["#1b1c22", "#4a4e5a", "#8a8f9c", "#c9ccd4", "#ffffff",
+           "#e8505b", "#f2a541", "#ffd23f", "#52c7a0", "#2fb5c9",
+           "#4d7cf0", "#7b61ff", "#c65ad8", "#ff8fab", "#a0522d",
+           "#8b1e3f", "#c2410c", "#e2b44a", "#2f9e44", "#0b7285",
+           "#1e3a8a", "#3b2a8f", "#6b2d5c", "#f7e1c9", "#d6e8ff"]
+RECENT = []
+
+
+class ColorPopover(Gtk.Popover):
+    """The web app's color picker, inside the editor window (a separate dialog could open behind it)."""
+
+    SV_W, SV_H = 220, 140
+
+    def __init__(self, anchor, title, value, allow_none, on_input, on_change):
+        super().__init__()
+        self.set_relative_to(anchor)
+        self.set_position(Gtk.PositionType.LEFT)
+        styled(self, "v3d-pop")
+        self.on_input, self.on_change = on_input, on_change
+        c = rgb(value or "#888888")
+        self.hsv = list(colorsys.rgb_to_hsv(*c))
+        self._syncing = False
+        self._dragging = False
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_start(4)
+        box.set_margin_end(4)
+        box.set_margin_top(4)
+        box.set_margin_bottom(4)
+        box.pack_start(label(title, "cp-title"), False, False, 0)
+        self.sv = Gtk.EventBox()
+        self.sv_image = Gtk.Image()
+        self.sv.add(self.sv_image)
+        self.sv.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.BUTTON_RELEASE_MASK |
+                           Gdk.EventMask.POINTER_MOTION_MASK)
+        self.sv.connect("button-press-event", self.sv_press)
+        self.sv.connect("motion-notify-event", lambda w, e: self._dragging and self.sv_at(e.x, e.y, False))
+        self.sv.connect("button-release-event", self.sv_release)
+        box.pack_start(self.sv, False, False, 0)
+        self.hue = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL,
+                             adjustment=Gtk.Adjustment(value=0, lower=0, upper=360, step_increment=1, page_increment=10))
+        self.hue.set_draw_value(False)
+        styled(self.hue, "hue")
+        self.hue.connect("value-changed", self.hue_changed)
+        self.hue.connect("button-release-event", lambda *_: self.emit_color(True) and False)
+        box.pack_start(self.hue, False, False, 0)
+        tools = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.chip = Gtk.Image()
+        tools.pack_start(self.chip, False, False, 0)
+        self.hex = Gtk.Entry()
+        self.hex.set_width_chars(9)
+        self.hex.set_max_length(9)
+        self.hex.connect("activate", self.hex_entered)
+        self.hex.connect("focus-out-event", lambda *_: self.hex_entered(self.hex) and False)
+        tools.pack_start(self.hex, True, True, 0)
+        if allow_none:
+            none = styled(Gtk.Button(label="None"), "btn")
+            none.set_tooltip_text("No color")
+            none.connect("clicked", self.choose_none)
+            tools.pack_start(none, False, False, 0)
+        box.pack_start(tools, False, False, 0)
+        if RECENT:
+            box.pack_start(label("RECENT", "sub-label"), False, False, 0)
+            box.pack_start(self.swatches(RECENT), False, False, 0)
+        box.pack_start(label("PALETTE", "sub-label"), False, False, 0)
+        box.pack_start(self.swatches(PALETTE), False, False, 0)
+        box.show_all()
+        self.add(box)
+        self.paint()
+
+    def swatches(self, colors):
+        grid = Gtk.Grid(column_spacing=4, row_spacing=4)
+        for i, col in enumerate(colors):
+            b = styled(Gtk.Button(), "cp-sw")
+            b.set_tooltip_text(col)
+            b.add(Gtk.Image.new_from_pixbuf(svg_pixbuf(chip_svg(col, 24))))
+            b.connect("clicked", lambda _b, c=col: self.set_hex(c, True))
+            grid.attach(b, i % 10 if len(colors) <= 10 else i % 5, i // (10 if len(colors) <= 10 else 5), 1, 1)
+        return grid
+
+    def value(self):
+        return hexc(colorsys.hsv_to_rgb(*self.hsv))
+
+    def paint(self):
+        h, sat, val = self.hsv
+        base = hexc(colorsys.hsv_to_rgb(h, 1, 1))
+        x, y = sat * self.SV_W, (1 - val) * self.SV_H
+        self.sv_image.set_from_pixbuf(svg_pixbuf(
+            '<svg %s width="%d" height="%d"><defs><clipPath id="c"><rect width="%d" height="%d" rx="6"/></clipPath>'
+            '<linearGradient id="a"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="%s"/></linearGradient>'
+            '<linearGradient id="b" x2="0" y2="1"><stop offset="0" stop-color="#000000" stop-opacity="0"/><stop offset="1" '
+            'stop-color="#000000"/></linearGradient></defs><g clip-path="url(#c)"><rect width="%d" height="%d" fill="url(#a)"/>'
+            '<rect width="%d" height="%d" fill="url(#b)"/></g><circle cx="%s" cy="%s" r="7" fill="none" stroke="#000000" '
+            'stroke-opacity="0.45" stroke-width="1"/><circle cx="%s" cy="%s" r="6" fill="none" stroke="#ffffff" stroke-width="2"/></svg>'
+            % (SVG_NS, self.SV_W, self.SV_H, self.SV_W, self.SV_H, base, self.SV_W, self.SV_H, self.SV_W, self.SV_H,
+               f(x), f(y), f(x), f(y))))
+        self._syncing = True
+        self.hue.set_value(h * 360)
+        self._syncing = False
+        v = self.value()
+        self.chip.set_from_pixbuf(svg_pixbuf(chip_svg(v, 26)))
+        if not self.hex.has_focus():
+            self.hex.set_text(v.upper())
+
+    def emit_color(self, final):
+        self.paint()
+        v = self.value()
+        if final:
+            if v in RECENT:
+                RECENT.remove(v)
+            RECENT.insert(0, v)
+            del RECENT[10:]
+            self.on_change(v)
+        else:
+            self.on_input(v)
+        return True
+
+    def sv_at(self, x, y, final):
+        self.hsv[1] = max(0.0, min(1.0, x / self.SV_W))
+        self.hsv[2] = max(0.0, min(1.0, 1 - y / self.SV_H))
+        return self.emit_color(final)
+
+    def sv_press(self, _w, e):
+        self._dragging = True
+        return self.sv_at(e.x, e.y, False)
+
+    def sv_release(self, _w, e):
+        self._dragging = False
+        return self.sv_at(e.x, e.y, True)
+
+    def hue_changed(self, scale):
+        if self._syncing:
+            return
+        self.hsv[0] = (scale.get_value() % 360) / 360.0
+        self.emit_color(False)
+
+    def set_hex(self, value, final):
+        c = E.parse_color(value)
+        if c is None:
+            return False
+        self.hsv = list(colorsys.rgb_to_hsv(c[0] / 255.0, c[1] / 255.0, c[2] / 255.0))
+        return self.emit_color(final)
+
+    def hex_entered(self, entry):
+        text = entry.get_text().strip()
+        if text and not text.startswith("#"):
+            text = "#" + text
+        if not self.set_hex(text, True):
+            self.paint()
+        return False
+
+    def choose_none(self, _b):
+        self.on_change(None)
+        self.popdown()
+
+
 # ---------------------------------------------------------------- choices (labels as in the web app)
 
 KINDS = [("flat", "Flat"), ("extrude", "Extrude"), ("revolve", "Revolve"), ("inflate", "Inflate")]
@@ -519,6 +694,8 @@ class EditorWindow(Gtk.Window):
         self.bind = {}    # key -> [setter(value)] that update widgets without feedback
         self.rules = []   # (widget, predicate(state)) for controls that only apply sometimes
         self.icons = []   # (image, icon name, button) repainted when a toggle changes state
+        self.color_buttons = {}
+        self.color_popover = None
         for item in self.context:
             item["d"] = "".join("M" + "L".join("%s %s" % (f(x), f(y)) for x, y in pts) + ("Z" if closed else "")
                                 for pts, closed in item["subs"] if len(pts) > 1)
@@ -677,7 +854,7 @@ class EditorWindow(Gtk.Window):
         self.bind.setdefault(key, []).append(lambda v: combo.set_active_id(str(v)))
         return combo
 
-    def color(self, key, text, auto=False, fallback="fill", tip=None):
+    def color(self, key, text, auto=False, fallback="fill", tip=None, allow_none=False):
         btn = styled(Gtk.Button(), "swatch")
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         chip = Gtk.Image()
@@ -693,20 +870,21 @@ class EditorWindow(Gtk.Window):
             if v:
                 chip.set_from_pixbuf(svg_pixbuf(chip_svg(v)))
                 txt.set_text(v.upper())
+            elif allow_none:
+                chip.set_from_pixbuf(svg_pixbuf(chip_svg(None, none=True)))
+                txt.set_text("None")
             else:
                 chip.set_from_pixbuf(svg_pixbuf(chip_svg(self.state.get(fallback) or self.state.get("fill") or "#888888")))
                 txt.set_text("Auto")
 
         def pick(_b):
-            dlg = Gtk.ColorChooserDialog(title=text, transient_for=self)
-            dlg.set_use_alpha(False)
-            dlg.set_rgba(to_rgba(self.state.get(key) or self.state.get(fallback) or "#888888"))
-            if dlg.run() == Gtk.ResponseType.OK:
-                c = dlg.get_rgba()
-                self.on_widget(key, hexc((c.red, c.green, c.blue)))
-            dlg.destroy()
+            start = self.value_for(key) or self.state.get(fallback) or self.state.get("fill") or "#888888"
+            pop = ColorPopover(btn, text, start, allow_none, lambda v: self.on_widget(key, v), lambda v: self.on_widget(key, v))
+            self.color_popover = pop
+            pop.popup()
 
         btn.connect("clicked", pick)
+        self.color_buttons.setdefault(key, btn)
         self.bind.setdefault(key, []).append(show)
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         row.pack_start(btn, True, True, 0)
@@ -1048,13 +1226,18 @@ class EditorWindow(Gtk.Window):
         page = self.page()
         page.pack_start(self.sub("Fill"), False, False, 0)
         page.pack_start(self.color("fill", "Fill", tip="The shape's color (the front of the 3D object)"), False, False, 0)
-        page.pack_start(self.sub("Outline"), False, False, 0)
-        page.pack_start(self.toggle("edges", "Outline", "Draw the silhouette and sharp edges",
-                                    getter=lambda v: v not in (None, "none"),
-                                    setter=lambda on: "outline" if on else "none"), False, False, 0)
-        outline = lambda s: s.get("edges") not in (None, "none")  # noqa: E731
-        page.pack_start(self.when(self.color("edge_color", "Color"), outline), False, False, 0)
-        page.pack_start(self.when(self.slider("edge_width", "Width", 0.2, 8, 0.1, "px"), outline), False, False, 0)
+        page.pack_start(self.sub("Stroke"), False, False, 0)
+        page.pack_start(self.color("stroke", "Stroke", allow_none=True,
+                                   tip="Lines around the 3D object: its outline and sharp edges. None removes them."),
+                        False, False, 0)
+        stroked = lambda s: s.get("edges") not in (None, "none")  # noqa: E731
+        page.pack_start(self.when(self.slider("edge_width", "Width", 0.2, 8, 0.1, "px"), stroked), False, False, 0)
+        page.pack_start(self.when(self.row("Draw on", self.seg("edges", [("outline", "Outline", "Silhouette and sharp edges"),
+                                                                      ("all", "All edges", "Every facet edge")])), stroked),
+                        False, False, 0)
+        page.pack_start(self.when(self.slider("crease_angle", "Crease angle", 5, 120, 1, "°",
+                                              tip="Only edges sharper than this get a line"),
+                                  lambda s: s.get("edges") == "outline"), False, False, 0)
         page.pack_start(self.sub("Opacity"), False, False, 0)
         page.pack_start(self.slider("opacity", "Opacity", 0, 100, 1, "%"), False, False, 0)
         return page
@@ -1067,6 +1250,14 @@ class EditorWindow(Gtk.Window):
 
     def set_values(self, values):
         values = dict(values)
+        if "stroke" in values:  # Style › Stroke edits the edge lines
+            stroke = values.pop("stroke")
+            if stroke:
+                values["edge_color"] = stroke
+                if self.state.get("edges") in (None, "none"):
+                    values["edges"] = "outline"
+            else:
+                values["edges"] = "none"
         if "shadow_tone" in values:  # the Tinted / Black / Custom buttons edit shadow_tint
             tone = values.pop("shadow_tone")
             values["shadow_tint"] = tone if tone in ("auto", "black") else (
@@ -1076,6 +1267,8 @@ class EditorWindow(Gtk.Window):
             if key != "shared_light":
                 self.touched.add(key)
         keys = set(values)
+        if keys & {"edges", "edge_color"}:
+            keys.add("stroke")
         if "shadow_tint" in keys:
             keys.add("shadow_tone")
         if "fill" in keys:  # Auto colors show the front color
@@ -1088,6 +1281,8 @@ class EditorWindow(Gtk.Window):
         self.changed()
 
     def value_for(self, key):
+        if key == "stroke":
+            return self.state.get("edge_color") if self.state.get("edges") not in (None, "none") else None
         if key == "shadow_tone":
             tint = self.state.get("shadow_tint")
             return tint if tint in ("auto", "black") else "custom"
@@ -1386,6 +1581,10 @@ def _autotest(win, script):
         win.show_tab(script["tab"])
     if script.get("bevel_menu"):
         win.bevel_button.set_active(True)
+    if script.get("color_picker"):
+        win.color_buttons[script["color_picker"]].clicked()
+        if script.get("pick"):
+            win.color_popover.set_hex(script["pick"], True)
 
     def finish():
         win.render(draft=False)

@@ -51,8 +51,9 @@ The **Flat / Extrude / Revolve / Inflate** buttons sit at the top, and tabs belo
 | **Colors** | Front, sides, bevel and back colors (Auto follows the front), shadow tone (tinted, black or custom) and highlight color. |
 | **Light** | **Shared scene light** (on: every 3D object in the drawing gets this light), the light sphere (drag the sun), intensity, ambient, fill light, highlight and gloss. |
 | **Outline** | Edge lines (none, outline, all) with color, width and crease angle; a shadow cast onto the page or a floor shadow, with opacity, softness, distance and color. |
-| **Style** | The object's fill, its outline (on or off, color, width) and its opacity. |
+| **Style** | The object's **fill**, **stroke** (color or None, width, and whether it draws the outline or every edge) and **opacity**. A 3D object's stroke is its outline; a shape that already has a stroke keeps it when it's made 3D, and the stroke is saved on the shape, so Remove 3D gives it back. |
 
+Color buttons open the web app's color picker (color square, hue, hex code and palette) inside the window.
 Controls that don't apply are hidden, as in the web app. For example, the bevel settings only show when a bevel is picked.
 
 The **preview** shows the selected objects in 3D, in place on the page, with the rest of your drawing faded behind them, so you can line them up with other artwork. Scroll to zoom, right-drag to pan, or use **Fit selection** and **Fit page**.
