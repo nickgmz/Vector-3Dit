@@ -4,6 +4,10 @@ The Vector 3Dit 3D effects as an Inkscape extension. Select shapes in Inkscape a
 **inflate** or **tilt** them into 3D. The result is plain vector art, with every face an SVG path. The extension
 uses the same 3D engine as the web app, ported to Python, so both give the same look.
 
+
+**📘 Tutorial:** [how to use the 3D Editor, step by step](../docs/tutorial/), with screenshots of every tab.
+Also online: [tutorial](https://claude.ai/artifact/T3Gxnh4jms7FKfmm8buBwU) · [illustrated install guide](https://claude.ai/artifact/9PsvTAK7N3bndd7HVYJ3Lo).
+
 ## Install
 
 Requires **Inkscape 1.2 or newer**. Nothing else to install: Inkscape brings its own Python.

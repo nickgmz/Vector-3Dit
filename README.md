@@ -6,6 +6,8 @@ style them. The result stays **100% vector**: every face is an SVG shape you can
 
 ![Workflow](https://img.shields.io/badge/draw-→%20extrude%20→%20light%20→%20export-f2a541)
 
+**New to the Inkscape extension?** Start with the [tutorial](docs/tutorial/).
+
 ## Run it
 
 - **Single file:** open [`dist/vector-3dit.html`](dist/vector-3dit.html) in any modern browser (double-click works, no server needed).
@@ -20,6 +22,9 @@ The same 3D effects are also available inside Inkscape (1.2 or newer). **Extensi
 looks like this app's 3D panel, with tabs for view (trackball and preset views), shape, surface, colors, light, outline and style,
 and a live preview of the objects in place on the page.
 See [`inkscape-extension/`](inkscape-extension/) for install steps.
+
+**📘 Tutorial:** [Using the 3D Editor, step by step](docs/tutorial/) (with screenshots of every tab) ·
+[online version](https://claude.ai/artifact/T3Gxnh4jms7FKfmm8buBwU) · [illustrated install guide](https://claude.ai/artifact/9PsvTAK7N3bndd7HVYJ3Lo)
 
 ## Quick start
 
@@ -101,6 +106,7 @@ No build step or dependencies are required. The app is plain JavaScript modules 
   tests/                Node unit tests for geometry and the 3D engine
   tools/build.mjs       bundles everything into dist/vector-3dit.html
   inkscape-extension/   the 3D engine ported to Python as an Inkscape extension
+  docs/tutorial/        step-by-step tutorial for the Inkscape extension, with screenshots
 ```
 
 ```sh
