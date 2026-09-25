@@ -1,7 +1,9 @@
-"""The Rotate in 3D window for the Inkscape extension (GTK 3).
+"""The 3D Editor window for the Inkscape extension (GTK 3).
 
-A trackball and sliders turn the selected objects while a live preview shows
-them in place on the page, with the rest of the drawing faded behind them.
+Every Vector 3Dit setting in one window: kind, a trackball and preset views,
+shape, surface and material, colors, light, outlines and shadow, and style,
+with a live preview of the objects in place on the page and the rest of the
+drawing faded behind them.
 
 Everything on screen is drawn as SVG and shown through GdkPixbuf's SVG loader
 (the one GTK uses for its own icons), so the preview is the engine's own output
@@ -52,6 +54,9 @@ scale.v3d-p trough highlight, scale.v3d-d trough highlight { background-color: #
 .v3d-toolbar { padding: 6px 8px; }
 .v3d-panel spinbutton button { padding: 2px 3px; min-width: 14px; }
 .v3d-panel spinbutton entry { min-width: 0; }
+.v3d-sub { font-weight: bold; opacity: 0.7; font-size: 0.88em; }
+.v3d-chip { padding: 3px 4px; min-height: 0; }
+.v3d-section { padding: 4px 0; }
 """
 
 def rgb(hex_color, default=(0.6, 0.6, 0.6)):
@@ -197,11 +202,162 @@ def kind_icon(kind, color):
                       % (SVG_NS, KIND_ICONS[kind], color))
 
 
+# ---------------------------------------------------------------- light sphere
+
+def light_sphere_svg(size, az, el):
+    L = E.light_dir(az, el)
+    c = size / 2.0
+    R = c - 3
+    hx, hy = c + L[0] * R * 0.55, c - L[1] * R * 0.55
+    first = "#fbfbfc" if L[2] >= 0 else "#8d929c"
+    px, py = c + L[0] * R, c - L[1] * R
+    behind = L[2] < 0
+    if behind:
+        n = math.hypot(L[0], L[1]) or 1.0
+        px, py = c + L[0] / n * R, c - L[1] / n * R
+    return ('<svg %s width="%d" height="%d" viewBox="0 0 %d %d"><defs><radialGradient id="g" gradientUnits="userSpaceOnUse" '
+            'cx="%s" cy="%s" fx="%s" fy="%s" r="%s"><stop offset="0" stop-color="%s"/><stop offset="0.3" stop-color="#b3b8c2"/>'
+            '<stop offset="1" stop-color="#262930"/></radialGradient></defs>'
+            '<circle cx="%s" cy="%s" r="%s" fill="url(#g)" stroke="#43474f" stroke-width="1.5"/>'
+            '<circle cx="%s" cy="%s" r="6.5" fill="#ffd666" fill-opacity="%s" stroke="#3a2a05" stroke-width="1.5"/></svg>'
+            % (SVG_NS, size, size, size, size, f(hx), f(hy), f(hx), f(hy), f(R * 1.25), first, f(c), f(c), f(R),
+               f(px), f(py), "0.45" if behind else "1"))
+
+
+class LightSphere(Gtk.EventBox):
+    """Drag the sun to aim the light. Past the rim, the light moves behind the object."""
+
+    SIZE = 124
+
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self.image = Gtk.Image()
+        self.add(self.image)
+        self.set_size_request(self.SIZE, self.SIZE)
+        self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.BUTTON_RELEASE_MASK |
+                        Gdk.EventMask.POINTER_MOTION_MASK)
+        self.set_tooltip_text("Drag to aim the light")
+        self.dragging = False
+        self.connect("button-press-event", self.on_press)
+        self.connect("motion-notify-event", lambda w, e: self.dragging and self.aim(e.x, e.y))
+        self.connect("button-release-event", self.on_release)
+        self._key = None
+
+    def on_press(self, _w, e):
+        self.dragging = True
+        self.aim(e.x, e.y)
+        return True
+
+    def on_release(self, _w, _e):
+        self.dragging = False
+        return True
+
+    def aim(self, x, y):
+        c = self.SIZE / 2.0
+        R = c - 3
+        nx, ny = (x - c) / R, -(y - c) / R
+        d = math.hypot(nx, ny)
+        if d <= 1:
+            z = math.sqrt(max(0.0, 1 - d * d))
+        else:
+            nx, ny = nx / d, ny / d
+            z = -min(1.0, (d - 1) * 2)
+            k = math.sqrt(max(0.0, 1 - z * z))
+            nx, ny = nx * k, ny * k
+        el = max(-89.0, min(89.0, math.degrees(math.asin(max(-1.0, min(1.0, ny))))))
+        az = math.degrees(math.atan2(nx, z))
+        self.win.set_values({"light_az": round(az, 1), "light_el": round(el, 1)})
+        return True
+
+    def redraw(self):
+        st = self.win.state
+        key = (st["light_az"], st["light_el"])
+        if key != self._key:
+            self._key = key
+            self.image.set_from_pixbuf(svg_pixbuf(light_sphere_svg(self.SIZE, *key)))
+
+
+def preset_icon(rx, ry, rz, front):
+    size = 40
+    c = size / 2.0
+    colors = {"front": front, "back": (0.45, 0.47, 0.52), "side": (0.5, 0.52, 0.57), "top": (0.62, 0.64, 0.69)}
+    out = ['<svg %s width="%d" height="%d" viewBox="0 0 %d %d">' % (SVG_NS, size, size, size, size)]
+    for _, pts, col in cube_faces(rx, ry, rz, size * 0.3, colors):
+        out.append('<path d="M%sZ" fill="%s" stroke="#14161b" stroke-width="1" stroke-linejoin="round"/>'
+                   % ("L".join("%s %s" % (f(c + p[0]), f(c + p[1])) for p in pts), hexc(col)))
+    out.append("</svg>")
+    return svg_pixbuf("".join(out))
+
+
+# ---------------------------------------------------------------- settings layout
+
+BEVELS = [("none", "None"), ("classic", "Classic"), ("round", "Round"), ("cove", "Cove"), ("ogee", "Ogee"),
+          ("step", "Step"), ("chisel", "Chisel")]
+SHAPE_ROWS = {
+    "extrude": [("slider", "depth", "Depth", 0, 400, "px"), ("check", "caps", "Solid (end caps)"),
+                ("combo", "bevel", "Bevel", BEVELS), ("slider", "bevel_w", "Bevel width", 0, 60, "px"),
+                ("slider", "bevel_h", "Bevel height", 0, 60, "px"),
+                ("combo", "bevel_sides", "Bevel on", [("front", "Front"), ("both", "Front and back")]),
+                ("check", "bevel_out", "Grow the bevel outward"), ("slider", "bevel_segs", "Bevel smoothness", 1, 12, "")],
+    "revolve": [("label", "Spins the shape around a vertical axis, like a lathe. Draw half a profile with its straight side "
+                          "on the axis."),
+                ("combo", "rev_axis", "Axis", [("left", "Left edge"), ("center", "Center"), ("right", "Right edge")]),
+                ("slider", "rev_angle", "Angle", 1, 360, "°"), ("slider", "rev_offset", "Offset from axis", 0, 400, "px"),
+                ("slider", "rev_segs", "Segments", 6, 128, ""), ("check", "rev_caps", "Cap the cut ends")],
+    "inflate": [("slider", "inf_height", "Puffiness", 0, 400, "px"),
+                ("combo", "inf_profile", "Profile", [("round", "Round"), ("pillow", "Pillow"), ("dome", "Dome"),
+                                                     ("soft", "Soft"), ("cone", "Sharp")]),
+                ("slider", "inf_spread", "Roundness", 5, 100, "%"),
+                ("combo", "inf_sides", "Sides", [("both", "Both sides"), ("front", "Front only")]),
+                ("slider", "inf_detail", "Detail", 12, 120, "")],
+    "flat": [("label", "Keeps the artwork paper-thin and tilts it in space: lay art on a floor, a wall or the side of an "
+                       "isometric box.")],
+}
+MATERIAL_NAMES = [("glossy", "Glossy"), ("clay", "Clay"), ("toon", "Toon"), ("poster", "Poster"), ("chrome", "Chrome"),
+                  ("gold", "Gold"), ("copper", "Copper"), ("lineart", "Line art"), ("wire", "Wireframe"), ("flat", "Flat")]
+PRESET_NAMES = [("front", "Front"), ("offaxis", "Off-axis"), ("offaxis-l", "Off-axis left"), ("hero", "Low angle"),
+                ("iso-l", "Isometric left"), ("iso-r", "Isometric right"), ("iso-t", "Isometric top"), ("top", "Top down"),
+                ("turn-l", "Turned left"), ("turn-r", "Turned right"), ("tilt", "Tilted back"), ("dimetric", "Dimetric")]
+SURFACE_ROWS = [("combo", "shading", "Shading", [("plastic", "Glossy"), ("matte", "Matte"), ("toon", "Toon"),
+                                                 ("metal", "Metal"), ("flat", "Flat"), ("lineart", "Line art"),
+                                                 ("wire", "Wireframe")]),
+                ("check", "smooth", "Smooth gradients on curved surfaces"),
+                ("slider", "steps", "Color bands", 0, 10, ""), ("slider", "smooth_angle", "Smoothing angle", 0, 90, "°")]
+COLOR_ROWS = [("color", "fill", "Front"), ("optcolor", "side_color", "Sides"), ("optcolor", "bevel_color", "Bevel"),
+              ("optcolor", "back_color", "Back"), ("color", "highlight", "Highlight"),
+              ("combo", "shadow_tint", "Shadow tone", [("auto", "Tinted"), ("black", "Black")])]
+LIGHT_ROWS = [("slider", "light_az", "Direction", -180, 180, "°"), ("slider", "light_el", "Height", -89, 89, "°"),
+              ("slider", "light_intensity", "Intensity", 0, 200, "%"), ("slider", "light_ambient", "Ambient", 0, 100, "%"),
+              ("slider", "light_fill", "Fill light", 0, 100, "%"), ("slider", "light_specular", "Highlight", 0, 150, "%"),
+              ("slider", "light_gloss", "Gloss", 0, 100, "")]
+OUTLINE_ROWS = [("combo", "edges", "Edge lines", [("none", "None"), ("outline", "Outline and sharp edges"),
+                                                  ("all", "Every facet")]),
+                ("color", "edge_color", "Line color"), ("slider", "edge_width", "Line width", 0.1, 20, "px"),
+                ("slider", "crease_angle", "Crease angle", 5, 120, "°"),
+                ("combo", "shadow", "Shadow", [("none", "None"), ("drop", "Cast onto the page"), ("floor", "Soft floor shadow")]),
+                ("slider", "shadow_opacity", "Shadow opacity", 0, 100, "%"),
+                ("slider", "shadow_blur", "Shadow softness", 0, 100, "px"),
+                ("slider", "shadow_dist", "Shadow distance", 0, 1000, "px"), ("color", "shadow_color", "Shadow color"),
+                ("slider", "seam", "Seam fix", 0, 3, "px")]
+STYLE_ROWS = [("color", "fill", "Fill"), ("outline", "edges", "Outline"), ("color", "edge_color", "Outline color"),
+              ("slider", "edge_width", "Outline width", 0.1, 20, "px"), ("slider", "opacity", "Opacity", 0, 100, "%")]
+ROTATION_KEYS = ("rx", "ry", "rz", "persp")
+FINE = {"bevel_w", "bevel_h", "edge_width", "seam", "shadow_blur"}
+
+
+def to_rgba(hex_color):
+    c = Gdk.RGBA()
+    if not c.parse(hex_color or "#808080"):
+        c.parse("#808080")
+    return c
+
+
 # ---------------------------------------------------------------- the window
 
-class RotateWindow(Gtk.Window):
+class EditorWindow(Gtk.Window):
     def __init__(self, init, render_cb, context, pages, cube_color, count):
-        super().__init__(title="Vector 3Dit · Rotate in 3D")
+        super().__init__(title="Vector 3Dit · 3D Editor")
         self.state = dict(init)
         self.touched = set()
         self.render_cb = render_cb
@@ -219,7 +375,8 @@ class RotateWindow(Gtk.Window):
         self._context_cache = None
         self._redraw_id = None
         self._size = (0, 0)
-        # Context outlines as SVG path data, built once.
+        self.bind = {}  # key -> [setter(value)] that update widgets without feedback
+        self.sections = {}
         for item in self.context:
             item["d"] = "".join("M" + "L".join("%s %s" % (f(x), f(y)) for x, y in pts) + ("Z" if closed else "")
                                 for pts, closed in item["subs"] if len(pts) > 1)
@@ -228,7 +385,15 @@ class RotateWindow(Gtk.Window):
         provider.load_from_data(CSS)
         Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-        self.set_default_size(1080, 700)
+        width, height = 1240, 820
+        try:  # fit smaller laptop screens
+            display = Gdk.Display.get_default()
+            monitor = display.get_primary_monitor() or display.get_monitor(0)
+            area = monitor.get_workarea()
+            width, height = min(width, area.width - 40), min(height, area.height - 60)
+        except Exception:  # noqa: BLE001
+            pass
+        self.set_default_size(max(900, width), max(560, height))
         self.set_position(Gtk.WindowPosition.CENTER)
         self.set_keep_above(True)
         self.connect("delete-event", lambda *a: self.finish(False) or True)
@@ -236,8 +401,15 @@ class RotateWindow(Gtk.Window):
 
         root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         self.add(root)
+        root.pack_start(self.build_preview(count), True, True, 0)
+        root.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 0)
+        root.pack_start(self.build_panel(), False, False, 0)
 
-        # Preview
+        self.sync_all()
+        self.render(draft=False)
+
+    # ---- building
+    def build_preview(self, count):
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         bar.get_style_context().add_class("v3d-toolbar")
@@ -272,27 +444,24 @@ class RotateWindow(Gtk.Window):
         self.preview.connect("scroll-event", self.on_scroll)
         self.canvas.connect("size-allocate", self.on_canvas_size)
         left.pack_start(self.preview, True, True, 0)
-        root.pack_start(left, True, True, 0)
-        root.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 0)
+        return left
 
-        # Controls
-        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+    def build_panel(self):
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         panel.get_style_context().add_class("v3d-panel")
-        panel.set_size_request(390, -1)
-        root.pack_start(panel, False, False, 0)
+        panel.set_size_request(430, -1)
 
         kinds = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, homogeneous=True)
         kinds.get_style_context().add_class("linked")
         kinds.get_style_context().add_class("v3d-kind")
-        self.kind_buttons = {}
-        self.kind_icons = {}
+        self.kind_buttons, self.kind_icons = {}, {}
         self.icon_color = "#555a66"
         for kind, label in KINDS:
             b = Gtk.ToggleButton()
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
             icon = Gtk.Image.new_from_pixbuf(kind_icon(kind, self.icon_color))
-            box.pack_start(icon, False, False, 0)
             icon.set_halign(Gtk.Align.CENTER)
+            box.pack_start(icon, False, False, 0)
             box.pack_start(Gtk.Label(label=label), False, False, 0)
             b.add(box)
             b.connect("toggled", self.on_kind, kind)
@@ -301,10 +470,55 @@ class RotateWindow(Gtk.Window):
             self.kind_icons[kind] = icon
         panel.pack_start(kinds, False, False, 0)
 
-        head = Gtk.Label(label="VIEW & ROTATION", xalign=0)
-        head.get_style_context().add_class("v3d-head")
-        panel.pack_start(head, False, False, 4)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        sections = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        sections.get_style_context().add_class("v3d-sections")
+        scroll.add(sections)
+        panel.pack_start(scroll, True, True, 0)
 
+        sections.pack_start(self.section("View & rotation", self.build_view(), True), False, False, 0)
+        self.shape_stack = Gtk.Stack()
+        self.shape_stack.set_vhomogeneous(False)
+        self.shape_stack.set_transition_type(Gtk.StackTransitionType.NONE)
+        for kind, rows in SHAPE_ROWS.items():
+            self.shape_stack.add_named(self.grid(rows), kind)
+        sections.pack_start(self.section("Shape", self.shape_stack, True), False, False, 0)
+        surface = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        surface.pack_start(self.sublabel("Material presets"), False, False, 0)
+        surface.pack_start(self.chips([(k, l, None) for k, l in MATERIAL_NAMES], self.apply_material, 5), False, False, 0)
+        surface.pack_start(self.grid(SURFACE_ROWS), False, False, 0)
+        sections.pack_start(self.section("Surface & material", surface, False), False, False, 0)
+        sections.pack_start(self.section("Colors", self.grid(COLOR_ROWS), False), False, False, 0)
+        light = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.light_sphere = LightSphere(self)
+        self.light_sphere.set_halign(Gtk.Align.CENTER)
+        light.pack_start(self.light_sphere, False, False, 0)
+        light.pack_start(self.grid(LIGHT_ROWS), False, False, 0)
+        sections.pack_start(self.section("Light", light, False), False, False, 0)
+        sections.pack_start(self.section("Outlines & shadow", self.grid(OUTLINE_ROWS), False), False, False, 0)
+        sections.pack_start(self.section("Style", self.grid(STYLE_ROWS), True), False, False, 0)
+
+        note = Gtk.Label(xalign=0)
+        note.set_markup("<small>Changes apply to every selected object. Settings you don't touch stay as each object "
+                        "has them.</small>")
+        note.set_line_wrap(True)
+        note.set_max_width_chars(44)
+        note.get_style_context().add_class("v3d-hint")
+        panel.pack_start(note, False, False, 0)
+        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        cancel = Gtk.Button(label="Cancel")
+        cancel.connect("clicked", lambda *_: self.finish(False))
+        apply_btn = Gtk.Button(label="Apply")
+        apply_btn.get_style_context().add_class("suggested-action")
+        apply_btn.connect("clicked", lambda *_: self.finish(True))
+        buttons.pack_end(apply_btn, False, False, 0)
+        buttons.pack_end(cancel, False, False, 0)
+        panel.pack_start(buttons, False, False, 0)
+        return panel
+
+    def build_view(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self.trackball = Trackball(self)
         row.pack_start(self.trackball, False, False, 0)
@@ -318,71 +532,178 @@ class RotateWindow(Gtk.Window):
         face = Gtk.Button(label="↺  Face front")
         face.connect("clicked", lambda *_: self.set_rotation(0, 0, 0))
         side.pack_start(face, False, False, 0)
-        self.preset = Gtk.ComboBoxText()
-        for key, label in VIEWS:
-            self.preset.append(key, label)
-        self.preset.set_active(0)
-        self.preset.connect("changed", self.on_preset)
-        side.pack_start(self.preset, False, False, 0)
         side.set_valign(Gtk.Align.CENTER)
         row.pack_start(side, True, True, 0)
-        panel.pack_start(row, False, False, 0)
+        box.pack_start(row, False, False, 0)
+        box.pack_start(self.grid([("slider", "rx", "Tilt", -180, 180, "°", "x"), ("slider", "ry", "Turn", -180, 180, "°", "y"),
+                                  ("slider", "rz", "Spin", -180, 180, "°", "z"),
+                                  ("slider", "persp", "Perspective", 0, 160, "°", "p")]), False, False, 0)
+        box.pack_start(self.sublabel("Preset views"), False, False, 0)
+        chips = [(k, l, preset_icon(*E.PRESETS[k], self.cube_color)) for k, l in PRESET_NAMES]
+        flow = self.chips(chips, lambda k: self.set_rotation(*E.PRESETS[k]), 6)
+        self.preset_images = [(k, child.get_child().get_child()) for (k, _l, _p), child in zip(chips, flow.get_children())]
+        box.pack_start(flow, False, False, 0)
+        return box
 
+    def section(self, title, child, expanded):
+        exp = Gtk.Expander()
+        lab = Gtk.Label(label=title.upper(), xalign=0)
+        lab.get_style_context().add_class("v3d-head")
+        exp.set_label_widget(lab)
+        exp.set_expanded(expanded)
+        child.set_margin_top(8)
+        child.set_margin_bottom(10)
+        child.set_margin_start(4)
+        exp.add(child)
+        exp.get_style_context().add_class("v3d-section")
+        self.sections[title.upper()] = exp
+        return exp
+
+    @staticmethod
+    def sublabel(text):
+        lab = Gtk.Label(label=text, xalign=0)
+        lab.get_style_context().add_class("v3d-sub")
+        return lab
+
+    def chips(self, items, on_click, per_line):
+        flow = Gtk.FlowBox()
+        flow.set_selection_mode(Gtk.SelectionMode.NONE)
+        flow.set_max_children_per_line(per_line)
+        flow.set_min_children_per_line(min(per_line, 4))
+        flow.set_homogeneous(True)
+        flow.set_column_spacing(4)
+        flow.set_row_spacing(4)
+        for key, label, pixbuf in items:
+            b = Gtk.Button()
+            b.get_style_context().add_class("v3d-chip")
+            b.set_tooltip_text(label)
+            if pixbuf is not None:
+                b.add(Gtk.Image.new_from_pixbuf(pixbuf))
+            else:
+                b.set_label(label)
+            b.connect("clicked", lambda _b, k=key: on_click(k))
+            flow.add(b)
+        return flow
+
+    def grid(self, rows):
         grid = Gtk.Grid(column_spacing=10, row_spacing=6)
-        self.adjs = {}
-        specs = [("rx", "Tilt", "x", -180, 180, "°"), ("ry", "Turn", "y", -180, 180, "°"),
-                 ("rz", "Spin", "z", -180, 180, "°"), ("persp", "Perspective", "p", 0, 160, "°"),
-                 ("depth", "Depth", "d", 0, 400, "px")]
-        self.depth_widgets = []
-        for i, (key, label, cls, lo, hi, unit) in enumerate(specs):
-            lab = Gtk.Label(xalign=0)
-            col = AXIS_HEX.get(cls)
-            lab.set_markup('<span foreground="%s">%s</span>' % (col, label) if col and key != "persp" else label)
-            adj = Gtk.Adjustment(value=float(self.state.get(key, 0)), lower=lo, upper=hi, step_increment=1, page_increment=10)
-            scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=adj)
-            scale.set_draw_value(False)
-            scale.set_hexpand(True)
-            scale.get_style_context().add_class("v3d-" + cls)
-            spin = Gtk.SpinButton(adjustment=adj, climb_rate=1, digits=0)
-            spin.set_width_chars(4)
-            spin.set_numeric(True)
-            u = Gtk.Label(label=unit, xalign=0)
-            adj.connect("value-changed", self.on_adj, key)
-            for j, w in enumerate((lab, scale, spin, u)):
-                grid.attach(w, j, i, 1, 1)
-            self.adjs[key] = adj
-            if key == "depth":
-                self.depth_label = lab
-                self.depth_widgets = [lab, scale, spin, u]
-        panel.pack_start(grid, False, False, 0)
+        for i, row in enumerate(rows):
+            kind, key = row[0], row[1]
+            if kind == "label":
+                lab = Gtk.Label(label=key, xalign=0)
+                lab.set_line_wrap(True)
+                lab.set_max_width_chars(44)
+                lab.get_style_context().add_class("v3d-hint")
+                grid.attach(lab, 0, i, 4, 1)
+                continue
+            text = row[2]
+            if kind == "slider":
+                lo, hi, unit = row[3], row[4], row[5]
+                cls = row[6] if len(row) > 6 else "d"
+                lab = Gtk.Label(xalign=0)
+                col = AXIS_HEX.get(cls) if cls in ("x", "y", "z") else None
+                lab.set_markup('<span foreground="%s">%s</span>' % (col, text) if col else text)
+                value = float(self.state.get(key, lo) or 0)
+                digits = 1 if key in FINE else 0
+                adj = Gtk.Adjustment(value=value, lower=min(lo, value), upper=max(hi, value),
+                                     step_increment=0.1 if digits else 1, page_increment=1 if digits else 10)
+                scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=adj)
+                scale.set_draw_value(False)
+                scale.set_hexpand(True)
+                scale.get_style_context().add_class("v3d-" + cls)
+                spin = Gtk.SpinButton(adjustment=adj, climb_rate=1, digits=digits)
+                spin.set_width_chars(4)
+                spin.set_numeric(True)
+                adj.connect("value-changed", lambda a, k=key: self.on_widget(k, a.get_value()))
+                self.bind.setdefault(key, []).append(lambda v, a=adj: a.set_value(float(v)) if v is not None else None)
+                for j, w in enumerate((lab, scale, spin, Gtk.Label(label=unit, xalign=0))):
+                    grid.attach(w, j, i, 1, 1)
+            elif kind == "check":
+                chk = Gtk.CheckButton(label=text)
+                chk.connect("toggled", lambda c, k=key: self.on_widget(k, c.get_active()))
+                self.bind.setdefault(key, []).append(lambda v, c=chk: c.set_active(bool(v)))
+                grid.attach(chk, 0, i, 4, 1)
+            elif kind == "outline":
+                chk = Gtk.CheckButton(label="Draw the outline and sharp edges")
+                chk.connect("toggled", lambda c: self.on_widget("edges", "outline" if c.get_active() else "none"))
+                self.bind.setdefault("edges", []).append(lambda v, c=chk: c.set_active(v not in (None, "none")))
+                grid.attach(Gtk.Label(label=text, xalign=0), 0, i, 1, 1)
+                grid.attach(chk, 1, i, 3, 1)
+            elif kind == "combo":
+                combo = Gtk.ComboBoxText()
+                for value, label in row[3]:
+                    combo.append(value, label)
+                combo.connect("changed", lambda c, k=key: c.get_active_id() and self.on_widget(k, c.get_active_id()))
+                self.bind.setdefault(key, []).append(lambda v, c=combo: c.set_active_id(str(v)))
+                grid.attach(Gtk.Label(label=text, xalign=0), 0, i, 1, 1)
+                grid.attach(combo, 1, i, 3, 1)
+            elif kind in ("color", "optcolor"):
+                btn = Gtk.ColorButton()
+                btn.set_hexpand(True)
+                if kind == "optcolor":
+                    chk = Gtk.CheckButton(label=text)
+                    chk.set_tooltip_text("Off: use the front color")
 
-        panel.pack_start(Gtk.Box(), True, True, 0)
-        note = Gtk.Label(xalign=0)
-        note.set_markup("<small>Other settings (bevels, material, light) stay as they are. "
-                        "Change them with the Extrude, Revolve or Inflate dialogs.</small>")
-        note.set_line_wrap(True)
-        note.set_max_width_chars(36)
-        note.get_style_context().add_class("v3d-hint")
-        panel.pack_start(note, False, False, 0)
-        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        cancel = Gtk.Button(label="Cancel")
-        cancel.connect("clicked", lambda *_: self.finish(False))
-        apply_btn = Gtk.Button(label="Apply")
-        apply_btn.get_style_context().add_class("suggested-action")
-        apply_btn.connect("clicked", lambda *_: self.finish(True))
-        buttons.pack_end(apply_btn, False, False, 0)
-        buttons.pack_end(cancel, False, False, 0)
-        panel.pack_start(buttons, False, False, 0)
+                    def toggled(c, k=key, b=btn):
+                        b.set_sensitive(c.get_active())
+                        self.on_widget(k, hexc((b.get_rgba().red, b.get_rgba().green, b.get_rgba().blue)) if c.get_active() else None)
 
+                    chk.connect("toggled", toggled)
+                    btn.connect("color-set", lambda b, k=key, c=chk: c.get_active() and self.on_widget(
+                        k, hexc((b.get_rgba().red, b.get_rgba().green, b.get_rgba().blue))))
+
+                    def setter(v, c=chk, b=btn):
+                        c.set_active(bool(v))
+                        b.set_sensitive(bool(v))
+                        b.set_rgba(to_rgba(v or self.state.get("fill")))  # off: shows the front color
+
+                    self.bind.setdefault(key, []).append(setter)
+                    grid.attach(chk, 0, i, 1, 1)
+                else:
+                    btn.connect("color-set", lambda b, k=key: self.on_widget(
+                        k, hexc((b.get_rgba().red, b.get_rgba().green, b.get_rgba().blue))))
+                    self.bind.setdefault(key, []).append(lambda v, b=btn: v and b.set_rgba(to_rgba(v)))
+                    grid.attach(Gtk.Label(label=text, xalign=0), 0, i, 1, 1)
+                grid.attach(btn, 1, i, 3, 1)
+        return grid
+
+    # ---- state
+    def on_widget(self, key, value):
+        if not self._syncing:
+            self.set_values({key: value}, from_widget=True)
+        return False
+
+    def set_values(self, values, from_widget=False):
+        for key, value in values.items():
+            self.state[key] = value
+            self.touched.add(key)
+        self.sync(values.keys())
+        if "fill" in values:  # the cube icons show the front color
+            self.cube_color = rgb(values["fill"], self.cube_color)
+            self.trackball._key = None
+            for k, img in self.preset_images:
+                img.set_from_pixbuf(preset_icon(*E.PRESETS[k], self.cube_color))
+        self.changed()
+
+    def sync(self, keys):
+        self._syncing = True
+        try:
+            for key in keys:
+                for setter in self.bind.get(key, []):
+                    setter(self.state.get(key))
+        finally:
+            self._syncing = False
+
+    def sync_all(self):
+        self.sync(list(self.bind.keys()))
         self._syncing = True
         self.kind_buttons[self.state["kind"]].set_active(True)
         self._syncing = False
-        self.update_depth_row()
+        self.shape_stack.set_visible_child_name(self.state["kind"])
         self.update_kind_icons()
-        self.render(draft=False)
         self.trackball.redraw()
+        self.light_sphere.redraw()
 
-    # ---- state
     def on_kind(self, button, kind):
         if self._syncing:
             return
@@ -397,11 +718,9 @@ class RotateWindow(Gtk.Window):
             if k != kind:
                 b.set_active(False)
         self._syncing = False
-        self.state["kind"] = kind
-        self.touched.add("kind")
-        self.update_depth_row()
+        self.shape_stack.set_visible_child_name(kind)
+        self.set_values({"kind": kind})
         self.update_kind_icons()
-        self.changed()
 
     def update_kind_icons(self):
         fg = self.kind_buttons["flat"].get_style_context().get_color(Gtk.StateFlags.NORMAL)
@@ -409,34 +728,12 @@ class RotateWindow(Gtk.Window):
         for k, icon in self.kind_icons.items():
             icon.set_from_pixbuf(kind_icon(k, "#231503" if k == self.state["kind"] else self.icon_color))
 
-    def update_depth_row(self):
-        kind = self.state["kind"]
-        show = kind in ("extrude", "inflate")
-        for w in self.depth_widgets:
-            w.set_visible(show)
-            w.set_no_show_all(not show)
-        self.depth_label.set_text("Puffiness" if kind == "inflate" else "Depth")
+    def apply_material(self, name):
+        values = dict(E.MATERIALS.get(name, {}))
+        self.set_values(values)
 
-    def on_adj(self, adj, key):
-        if self._syncing:
-            return
-        self.state[key] = adj.get_value()
-        self.touched.add("depth" if key == "depth" else "rotation")
-        if key != "depth":
-            self.preset.set_active(0)
-        self.changed(sync=False)
-
-    def on_preset(self, combo):
-        key = combo.get_active_id()
-        if key and key in E.PRESETS:
-            self.set_rotation(*E.PRESETS[key], keep_preset=True)
-
-    def set_rotation(self, rx, ry, rz, keep_preset=False):
-        self.state.update(rx=wrap180(rx), ry=wrap180(ry), rz=wrap180(rz))
-        self.touched.add("rotation")
-        if not keep_preset:
-            self.preset.set_active(0)
-        self.changed()
+    def set_rotation(self, rx, ry, rz):
+        self.set_values({"rx": wrap180(rx), "ry": wrap180(ry), "rz": wrap180(rz)})
 
     def nudge(self, drx, dry):
         R = E.m_mul(E.m_mul(E.rot_x(drx), E.rot_y(dry)), E.from_euler(self.state["rx"], self.state["ry"], self.state["rz"]))
@@ -466,14 +763,9 @@ class RotateWindow(Gtk.Window):
         self.drag = None
         return True
 
-    def changed(self, sync=True):
-        if sync:
-            self._syncing = True
-            for key in ("rx", "ry", "rz", "persp", "depth"):
-                if abs(self.adjs[key].get_value() - self.state[key]) > 1e-9:
-                    self.adjs[key].set_value(self.state[key])
-            self._syncing = False
+    def changed(self):
         self.trackball.redraw()
+        self.light_sphere.redraw()
         if self._idle is None:
             self._idle = GLib.idle_add(self._draft)
         if self._full is not None:
@@ -668,9 +960,8 @@ def run(init, render_cb, context, pages, cube_color, count):
     try:
         if not svg_supported():
             raise RuntimeError("GTK's SVG image loader (gdk-pixbuf svg / librsvg) is not available")
-        win = RotateWindow(init, render_cb, context, pages, cube_color, count)
+        win = EditorWindow(init, render_cb, context, pages, cube_color, count)
         win.show_all()
-        win.update_depth_row()
         script = os.environ.get("VECTOR3DIT_AUTOTEST")
         if script:
             GLib.timeout_add(500, _autotest, win, json.loads(script))
@@ -687,13 +978,19 @@ def _autotest(win, script):
     if script.get("kind"):
         win.kind_buttons[script["kind"]].set_active(True)
     if script.get("preset"):
-        win.preset.set_active_id(script["preset"])
+        win.set_rotation(*E.PRESETS[script["preset"]])
     for dx, dy in script.get("drag", []):
         win.begin_turn(0, 0)
         win.turn_to(dx, dy, 0, 0.8)
         win.end_turn()
-    if "depth" in script:
-        win.adjs["depth"].set_value(script["depth"])
+    if script.get("material"):
+        win.apply_material(script["material"])
+    if script.get("set"):
+        win.set_values(script["set"])
+    for name in script.get("expand", []):
+        win.sections[name.upper()].set_expanded(True)
+    for name in script.get("collapse", []):
+        win.sections[name.upper()].set_expanded(False)
 
     def finish():
         win.render(draft=False)

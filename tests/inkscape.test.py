@@ -4,7 +4,7 @@
 1. Parity: the Python engine must produce the same meshes as the web app's JavaScript engine (needs Node).
 2. End to end: run the extension on a small SVG, re-edit the result, then Remove 3D (needs inkex:
    `pip install inkex`, or run with Inkscape's bundled Python).
-3. The Rotate in 3D window, driven by a test script (needs GTK 3 for Python and a display or xvfb-run).
+3. The 3D Editor window, driven by a test script (needs GTK 3 for Python and a display or xvfb-run).
 
     python3 tests/inkscape.test.py
 """
@@ -133,10 +133,10 @@ def gtk_command():
     return None
 
 
-def test_rotate_window():
+def test_editor_window():
     cmd = gtk_command()
     if not cmd:
-        print("skip Rotate in 3D window (needs inkex, GTK 3 for Python and a display or xvfb-run)")
+        print("skip 3D Editor window (needs inkex, GTK 3 for Python and a display or xvfb-run)")
         return
     from lxml import etree
     ns = {"svg": "http://www.w3.org/2000/svg"}
@@ -154,22 +154,41 @@ def test_rotate_window():
 
     def run_window(script, args, inp, out):
         env = dict(os.environ, VECTOR3DIT_AUTOTEST=json.dumps(script))
-        return subprocess.run(cmd + ["-c", no_cairo, os.path.join(EXT, "vector3dit.py"), "--kind=rotate"] + args +
+        return subprocess.run(cmd + ["-c", no_cairo, os.path.join(EXT, "vector3dit.py"), "--kind=editor"] + args +
                               ["--output=" + out, inp], capture_output=True, text=True, env=env, timeout=120)
 
     p = run_window({"drag": [[40, -20]], "apply": True}, ["--id=" + res_id, "--id=box"], out1, out2)
-    check(p.returncode == 0 and not p.stderr.strip(), "rotate window applies without errors", p.stderr[-500:])
+    check(p.returncode == 0 and not p.stderr.strip(), "editor window applies without errors", p.stderr[-500:])
     doc = etree.parse(out2)
     results = {g.get("id"): json.loads(g.get("data-v3d")) for g in doc.xpath("//svg:g[@data-v3d]", namespaces=ns)}
-    check(len(results) == 2, "rotate window makes the plain box 3D too", str(len(results)))
+    check(len(results) == 2, "editor window makes the plain box 3D too", str(len(results)))
     heart = results.get(res_id, {})
-    check(heart.get("bevel") == "classic" and heart.get("kind") == "extrude", "rotate window keeps other settings")
+    check(heart.get("bevel") == "classic" and heart.get("kind") == "extrude", "editor window keeps settings that weren't touched")
     turned = [r for r in results.values() if abs(r["rx"] - 20) > 1 or abs(r["ry"] + 30) > 1]
     check(len(turned) == 2, "both objects turned by the drag", str([(r["rx"], r["ry"]) for r in results.values()]))
     check(all(r["kind"] in ("extrude", "flat", "revolve", "inflate") for r in results.values()), "valid kinds stored")
 
     p = run_window({"drag": [[90, 0]], "apply": False}, ["--id=" + res_id], out2, out3)
     check(p.returncode == 0 and not os.path.exists(out3), "cancel leaves the document unchanged", p.stderr[-300:])
+
+    # Every section at once: material, shape, colors, light, outlines, shadow and style.
+    edits = {"material": "toon", "kind": "inflate",
+             "set": {"inf_height": 30, "fill": "#2f9e8f", "side_color": "#3b6fd8", "light_az": 30, "light_intensity": 120,
+                     "shadow": "floor", "edge_width": 3, "opacity": 80}}
+    out5 = os.path.join(tmp, "5.svg")
+    p = run_window(dict(edits, apply=True), ["--id=" + res_id], out2, out5)
+    doc = etree.parse(out5)
+    res = doc.xpath("//*[@id='%s']" % res_id, namespaces=ns)[0]
+    fx = json.loads(res.get("data-v3d"))
+    source = res.find(".//{http://www.w3.org/2000/svg}path[@class='v3d-source']")
+    px = 1 / 3.7795  # the test document is in mm
+    ok = (fx["kind"] == "inflate" and fx["shading"] == "toon" and fx["edges"] == "outline" and fx["side_color"] == "#3b6fd8"
+          and fx["shadow"] == "floor" and abs(fx["light"]["az"] - 30) < 1e-6 and abs(fx["light"]["intensity"] - 1.2) < 1e-6
+          and abs(fx["inf_height"] - 30 * px) < 1e-3 and abs(fx["edge_width"] - 3 * px) < 1e-3
+          and fx.get("bevel") == "classic")
+    check(p.returncode == 0 and ok, "editor window applies every section, in document units", p.stderr[-300:] or str(fx)[:300])
+    style = source.get("style") or ""
+    check("fill:#2f9e8f" in style and "opacity:0.8" in style, "style section sets the shape's fill and opacity", style)
 
     rx = heart.get("rx")
     p = run_ext(["--kind=extrude", "--bevel=round", "--id=" + res_id], out2, out4)
@@ -182,6 +201,6 @@ def test_rotate_window():
 if __name__ == "__main__":
     test_parity()
     test_extension()
-    test_rotate_window()
+    test_editor_window()
     print("%d failure(s)" % failures if failures else "all passed")
     sys.exit(1 if failures else 0)

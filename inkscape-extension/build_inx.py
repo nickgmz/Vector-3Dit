@@ -103,7 +103,7 @@ TITLES = {"extrude": "Extrude", "revolve": "Revolve", "inflate": "Inflate", "fla
 
 VIEW_PAGE = page("view", "View", [
     boolean("keep_rotation", "Objects that are already 3D keep their rotation", True,
-            "Untick to apply the angles below to them too. Tip: Extensions › Vector 3Dit › Rotate in 3D lets you "
+            "Untick to apply the angles below to them too. Tip: Extensions › Vector 3Dit › 3D Editor lets you "
             "drag to turn objects with a live preview."),
     choice("view", "Preset view", VIEWS, "custom"),
     num("rx", "Tilt (X, °)", 20, -180, 180),
@@ -150,7 +150,7 @@ EXTRAS_PAGE = page("extras", "Outlines & shadow", [
 HELP_PAGE = page("help", "Help", [
     label("Select shapes (or a group) and run the effect. Text must be converted first: Path › Object to Path."),
     label("The result is a group of plain vector faces. It keeps the original shape hidden inside, so running any Vector 3Dit effect on it again re-renders it with the new settings."),
-    label("Extensions › Vector 3Dit › Rotate in 3D opens a window with a trackball and a live preview: drag to turn objects and see where they land on the page."),
+    label("Tip: Extensions › Vector 3Dit › 3D Editor puts every setting in one window, with a trackball and a live preview of the objects in place on the page."),
     label("Extensions › Vector 3Dit › Remove 3D puts the original flat shape back."),
     label("Tip: tick Live preview to see changes as you edit."),
 ])
@@ -167,7 +167,9 @@ def effect_inx(kind):
   <effect needs-live-preview="true">
     <object-type>all</object-type>
     <effects-menu>
-      <submenu name="Vector 3Dit"/>
+      <submenu name="Vector 3Dit">
+        <submenu name="Classic dialogs"/>
+      </submenu>
     </effects-menu>
   </effect>
   <script>
@@ -194,11 +196,11 @@ REMOVE_INX = """<?xml version="1.0" encoding="UTF-8"?>
 </inkscape-extension>
 """
 
-ROTATE_INX = """<?xml version="1.0" encoding="UTF-8"?>
+EDITOR_INX = """<?xml version="1.0" encoding="UTF-8"?>
 <inkscape-extension xmlns="http://www.inkscape.org/namespace/inkscape/extension">
-  <name>Rotate in 3D…</name>
-  <id>org.vector3dit.rotate</id>
-  <param name="kind" type="string" gui-hidden="true">rotate</param>
+  <name>3D Editor…</name>
+  <id>org.vector3dit.editor</id>
+  <param name="kind" type="string" gui-hidden="true">editor</param>
   <effect needs-live-preview="false">
     <object-type>all</object-type>
     <effects-menu>
@@ -217,6 +219,6 @@ if __name__ == "__main__":
             f.write(effect_inx(k))
     with open(os.path.join(HERE, "vector3dit_remove.inx"), "w", encoding="utf-8") as f:
         f.write(REMOVE_INX)
-    with open(os.path.join(HERE, "vector3dit_rotate.inx"), "w", encoding="utf-8") as f:
-        f.write(ROTATE_INX)
+    with open(os.path.join(HERE, "vector3dit_editor.inx"), "w", encoding="utf-8") as f:
+        f.write(EDITOR_INX)
     print("wrote", len(SHAPE_PAGES) + 2, "inx files")

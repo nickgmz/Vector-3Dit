@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <inkscape-extension xmlns="http://www.inkscape.org/namespace/inkscape/extension">
-  <name>Rotate in 3D…</name>
-  <id>org.vector3dit.rotate</id>
-  <param name="kind" type="string" gui-hidden="true">rotate</param>
+  <name>3D Editor…</name>
+  <id>org.vector3dit.editor</id>
+  <param name="kind" type="string" gui-hidden="true">editor</param>
   <effect needs-live-preview="false">
     <object-type>all</object-type>
     <effects-menu>

@@ -16,8 +16,9 @@ Display fonts and the UI font load from Google Fonts when you're online, and fal
 
 ### Inkscape extension
 
-The same 3D effects are also available inside Inkscape (1.2 or newer): **Extensions › Vector 3Dit › Extrude / Revolve / Inflate / Flat tilt**,
-plus **Rotate in 3D…**, a window with a drag-to-turn trackball and a live preview of the objects in place on the page.
+The same 3D effects are also available inside Inkscape (1.2 or newer). **Extensions › Vector 3Dit › 3D Editor…** opens one window with
+every setting (view and rotation with a drag-to-turn trackball, shape, surface and material, colors, light, outlines and shadow, style)
+and a live preview of the objects in place on the page.
 See [`inkscape-extension/`](inkscape-extension/) for install steps.
 
 ## Quick start
@@ -106,5 +107,5 @@ No build step or dependencies are required. The app is plain JavaScript modules 
 node tests/core.test.cjs   # geometry, paths, curve fitting, tracing
 node tests/mesh.test.cjs   # mesh builders and renderer
 node tools/build.mjs       # rebuild dist/vector-3dit.html
-python3 tests/inkscape.test.py   # Inkscape extension: parity with the JS engine, end-to-end runs, rotate window
+python3 tests/inkscape.test.py   # Inkscape extension: parity with the JS engine, end-to-end runs, 3D Editor window
 ```

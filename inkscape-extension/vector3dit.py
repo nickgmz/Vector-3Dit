@@ -253,8 +253,8 @@ class Vector3Dit(inkex.EffectExtension):
         if self.options.kind == "remove":
             self.remove_3d()
             return None
-        if self.options.kind == "rotate":
-            return self.rotate_window()
+        if self.options.kind in ("editor", "rotate"):
+            return self.editor_window()
         fx, material_fill = self.settings()
         plan, skipped_text = self.plan()
         for src, res, subs, pivot in plan:
@@ -369,9 +369,49 @@ class Vector3Dit(inkex.EffectExtension):
         for el in parse_fragment("".join(out["defs"])):
             self.svg.defs.append(el)
 
-    # ---------------------------------------------------------------- rotate window
-    def rotate_window(self):
-        """Extensions › Vector 3Dit › Rotate in 3D…: turn objects with a trackball and a live preview."""
+    # ---------------------------------------------------------------- 3D editor window
+    # The window shows lengths in px and fractions as %; the document stores user units and 0-1 fractions.
+    PERCENT = ("inf_spread", "shadow_opacity")
+    LIGHT_PERCENT = ("intensity", "ambient", "fill", "specular")
+    INTEGERS = ("bevel_segs", "rev_segs", "inf_detail", "steps")
+
+    def to_ui(self, fx):
+        px = self.svg.unittouu("1px")
+        state = {}
+        for key, value in fx.items():
+            if key == "light":
+                for lk, lv in (value or {}).items():
+                    state["light_" + lk] = lv * 100 if lk in self.LIGHT_PERCENT else lv
+            elif key in LENGTHS:
+                state[key] = value / px
+            elif key in self.PERCENT:
+                state[key] = value * 100
+            else:
+                state[key] = value
+        return state
+
+    def from_ui(self, state, keys):
+        px = self.svg.unittouu("1px")
+        fx, light = {}, {}
+        for key in keys:
+            value = state[key]
+            if key in ("fill", "opacity"):
+                continue
+            if key.startswith("light_"):
+                lk = key[6:]
+                light[lk] = value / 100.0 if lk in self.LIGHT_PERCENT else value
+            elif key in LENGTHS:
+                fx[key] = value * px
+            elif key in self.PERCENT:
+                fx[key] = value / 100.0
+            elif key in self.INTEGERS:
+                fx[key] = int(round(value))
+            else:
+                fx[key] = value
+        return fx, light
+
+    def editor_window(self):
+        """Extensions › Vector 3Dit › 3D Editor…: every setting in one window with a trackball and a live preview."""
         plan, _ = self.plan()
         try:
             import warnings
@@ -380,19 +420,18 @@ class Vector3Dit(inkex.EffectExtension):
             import vector3dit_view as V  # GTK is only needed for this window.
         except (ImportError, ValueError) as err:
             raise inkex.AbortExtension(
-                "The Rotate in 3D window needs GTK 3 for Python (PyGObject). It comes with Inkscape on Windows and "
+                "The 3D Editor window needs GTK 3 for Python (PyGObject). It comes with Inkscape on Windows and "
                 "macOS. On Linux, install it with your package manager, e.g. `sudo apt install python3-gi "
-                "gir1.2-gtk-3.0 python3-gi-cairo`.\n\nYou can still set the angles on the View tab of the other "
-                "Vector 3Dit effects.\n\n(%s)" % err)
+                "gir1.2-gtk-3.0`.\n\nYou can still use Extensions › Vector 3Dit › Classic dialogs.\n\n(%s)" % err)
 
         defaults, material_fill = self.settings()
         defaults["kind"] = "extrude"  # plain shapes start as an extrusion
-        px = self.svg.unittouu("1px")
         items = []
         for src, res, subs, pivot in plan:
             base = self.stored_settings(res) if res is not None else {}
             fill = base.pop("fill", None) if res is not None else material_fill
             base = dict(defaults, **base)
+            base["light"] = dict(defaults["light"], **(base.get("light") or {}))
             try:
                 opacity = float(src.specified_style().get("opacity", 1) or 1)
             except ValueError:
@@ -400,20 +439,24 @@ class Vector3Dit(inkex.EffectExtension):
             items.append({"src": src, "res": res, "subs": subs, "pivot": pivot, "base": base, "fill": fill,
                           "color": fill or self.fill_of(src), "opacity": opacity, "cache": {}})
 
-        first = items[0]["base"]
-        init = {k: float(first.get(k, 0)) for k in ROTATION}
-        init["kind"] = first.get("kind", "extrude") if first.get("kind") in E.KINDS else "extrude"
-        init["depth"] = float(first.get("inf_height" if init["kind"] == "inflate" else "depth", 40 * px)) / px
+        first = items[0]
+        init = self.to_ui(first["base"])
+        if init.get("kind") not in E.KINDS:
+            init["kind"] = "extrude"
+        init["fill"] = first["color"]
+        init["opacity"] = first["opacity"] * 100
 
         def settings_for(item, state, touched):
             fx = dict(item["base"])
-            if "rotation" in touched:
-                fx.update({k: state[k] for k in ROTATION})
-            if "kind" in touched:
-                fx["kind"] = state["kind"]
-            if "depth" in touched:
-                fx["inf_height" if fx["kind"] == "inflate" else "depth"] = state["depth"] * px
+            updates, light = self.from_ui(state, touched)
+            fx.update(updates)
+            fx["light"] = dict(item["base"]["light"], **light)
             return fx
+
+        def look(item, state, touched):
+            color = state["fill"] if "fill" in touched else item["color"]
+            opacity = state["opacity"] / 100.0 if "opacity" in touched else item["opacity"]
+            return color, max(0.0, min(1.0, opacity))
 
         def render(state, touched, draft):
             outs = []
@@ -422,9 +465,10 @@ class Vector3Dit(inkex.EffectExtension):
                 if draft:  # while dragging: flat shading and no seam strokes, about twice as fast
                     fx["smooth"] = False
                     fx["seam"] = 0
-                out = E.render(item["subs"], fx, fill=item["color"], opacity=item["opacity"], id_prefix="p%d" % i,
+                color, opacity = look(item, state, touched)
+                out = E.render(item["subs"], fx, fill=color, opacity=opacity, id_prefix="p%d" % i,
                                pivot=item["pivot"], mesh_cache=item["cache"])
-                outs.append((out, item["opacity"]))
+                outs.append((out, opacity))
             return outs
 
         selected = set()
@@ -432,18 +476,25 @@ class Vector3Dit(inkex.EffectExtension):
             selected.add(item["res"] if item["res"] is not None else item["src"])
         context = self.context_shapes(selected)
         try:
-            result = V.run(init, render, context, self.page_rects(), V.rgb(items[0]["color"]), len(items))
+            result = V.run(init, render, context, self.page_rects(), V.rgb(first["color"]), len(items))
         except RuntimeError as err:
-            raise inkex.AbortExtension("The Rotate in 3D window can't open: %s. You can still set the angles on the "
-                                       "View tab of the other Vector 3Dit effects." % err)
+            raise inkex.AbortExtension("The 3D Editor window can't open: %s. You can still use Extensions › "
+                                       "Vector 3Dit › Classic dialogs." % err)
         if result is None:
             return False  # Cancel: leave the document untouched.
         state, touched = result
         if not touched:
             return False
         for item in items:
-            self.render_one(item["src"], item["res"], item["subs"], settings_for(item, state, touched),
-                            item["fill"], item["pivot"])
+            src = item["src"]
+            material = item["fill"]
+            color, opacity = look(item, state, touched)
+            if "fill" in touched:
+                src.style["fill"] = color  # the shape keeps its new color, also after Remove 3D
+                material = None
+            if "opacity" in touched:
+                src.style["opacity"] = E.fmt(opacity, 3)
+            self.render_one(src, item["res"], item["subs"], settings_for(item, state, touched), material, item["pivot"])
         return None
 
     def page_rects(self):
