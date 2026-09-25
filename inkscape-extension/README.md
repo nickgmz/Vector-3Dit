@@ -49,7 +49,7 @@ The **Flat / Extrude / Revolve / Inflate** buttons sit at the top, and tabs belo
 
 | Tab | What's in it |
 | --- | --- |
-| **View** | The trackball: drag the cube to turn the objects (**Shift** locks one axis, **Alt** spins them flat, arrow keys turn in 5° steps). Tilt, Turn, Spin and Perspective sliders, **Face front**, and 12 preset views. You can also drag in the preview itself. |
+| **View** | The trackball: drag the cube to turn the objects (**Shift** locks one axis, **Alt** spins them flat, arrow keys turn in 5° steps). Tilt, Turn, Spin and Perspective sliders, **Face front**, and 12 preset views. You can also drag in the preview itself. **Camera:** save the view as a named camera and lock objects to it, so a whole scene shares one vantage point (angles, turning point and perspective); turning one locked object turns them all. |
 | **Shape** | Settings for the current kind. Extrude: depth, solid or hollow, the bevel picker (None, Classic, Round, Cove, Ogee, Step, Chisel), bevel size, front or both sides, inward or outward, smoothness. Revolve: axis, angle, offset, segments, cut-end caps. Inflate: puffiness, profile, roundness, sides, detail. |
 | **Surface** | Material swatches (Glossy, Clay, Toon, Poster, Chrome, Gold, Copper, Line art, Wireframe, Flat color), shading, smooth gradients, color bands, smoothing angle. |
 | **Colors** | Front, sides, bevel and back colors (Auto follows the front), shadow tone (tinted, black or custom) and highlight color. |

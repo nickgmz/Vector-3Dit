@@ -390,7 +390,8 @@
     const R = M3.fromEuler(fx.rx || 0, fx.ry || 0, fx.rz || 0);
     const fov = clamp(fx.persp || 0, 0, 160);
     const persp = fov > 0.5;
-    const radius = mesh.radius + Math.hypot(off[0], off[1]);
+    // A shared scene camera fixes the camera distance, so every object linked to it gets the same perspective.
+    const radius = fx.sceneRadius > 0 ? fx.sceneRadius : mesh.radius + Math.hypot(off[0], off[1]);
     const dist = persp ? radius * (1.1 + 1 / Math.tan(((fov / 2) * Math.PI) / 180)) : Infinity;
     const cam = [0, 0, dist];
 

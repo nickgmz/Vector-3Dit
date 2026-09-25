@@ -1180,7 +1180,7 @@ def quant(u, steps):
 VIEW_KEYS = frozenset(("rx", "ry", "rz", "persp", "shading", "smooth", "steps", "side_color", "bevel_color",
                        "back_color", "shadow_tint", "highlight", "light", "edges", "edge_color", "edge_width",
                        "crease_angle", "shadow", "shadow_opacity", "shadow_blur", "shadow_dist", "shadow_color",
-                       "seam", "fill"))
+                       "seam", "fill", "scene_radius", "camera", "pivot_offset"))
 
 
 def render(subs, fx_in, fill="#f2a541", opacity=1.0, id_prefix="v3d", pivot=None, mesh_cache=None):
@@ -1213,7 +1213,8 @@ def render(subs, fx_in, fill="#f2a541", opacity=1.0, id_prefix="v3d", pivot=None
     R = from_euler(fx["rx"], fx["ry"], fx["rz"])
     fov = clamp(fx["persp"], 0, 160)
     persp = fov > 0.5
-    radius = mesh["radius"] + math.hypot(off[0], off[1])
+    # A shared scene camera fixes the camera distance, so every object linked to it gets the same perspective.
+    radius = fx.get("scene_radius") or (mesh["radius"] + math.hypot(off[0], off[1]))
     dist = radius * (1.1 + 1 / math.tan(rad(fov / 2))) if persp else float("inf")
     cam = [0.0, 0.0, dist]
 

@@ -24,6 +24,7 @@ SVG_NS = "http://www.w3.org/2000/svg"
 RESULT_ATTR = "data-v3d"
 PREFIX_ATTR = "data-v3d-prefix"
 SOURCE_CLASS = "v3d-source"
+CAMERAS_ATTR = "data-v3d-cameras"  # saved scene cameras, on the document root
 
 ROTATION = ("rx", "ry", "rz", "persp")
 CONTEXT_SKIP = {"defs", "metadata", "namedview", "clipPath", "mask", "pattern", "marker", "symbol", "title",
@@ -262,6 +263,9 @@ class Vector3Dit(inkex.EffectExtension):
             if res is not None and self.options.keep_rotation:
                 stored = self.stored_settings(res)
                 fx_one = dict(fx, **{k: stored[k] for k in ROTATION if k in stored})
+                cams = self.load_cameras()
+                if stored.get("camera") in cams:
+                    pivot = self.use_camera(fx_one, stored["camera"], cams[stored["camera"]])
             self.render_one(src, res, subs, fx_one, material_fill, pivot)
         if skipped_text:
             self.msg("Skipped %d text object(s): convert text to paths first (Path › Object to Path)." % skipped_text)
@@ -408,7 +412,7 @@ class Vector3Dit(inkex.EffectExtension):
         fx, light = {}, {}
         for key in keys:
             value = state[key]
-            if key in ("fill", "opacity"):
+            if key in ("fill", "opacity", "camera", "cameras", "shared_light"):
                 continue
             if key.startswith("light_"):
                 lk = key[6:]
@@ -445,6 +449,66 @@ class Vector3Dit(inkex.EffectExtension):
             return {}
         return {"edges": "outline", "edge_color": color, "edge_width": width}
 
+    # ---------------------------------------------------------------- scene cameras
+    def load_cameras(self):
+        try:
+            cams = json.loads(self.svg.get(CAMERAS_ATTR) or "{}")
+        except ValueError:
+            cams = {}
+        return cams if isinstance(cams, dict) else {}
+
+    def save_cameras(self, cams):
+        if cams:
+            self.svg.set(CAMERAS_ATTR, json.dumps(cams, separators=(",", ":")))
+        elif self.svg.get(CAMERAS_ATTR) is not None:
+            self.svg.attrib.pop(CAMERAS_ATTR)
+
+    @staticmethod
+    def use_camera(fx, name, cam):
+        """Lock fx to a saved camera: its angles, one turning point and one camera distance for every object."""
+        fx.update({k: cam[k] for k in ROTATION if k in cam})
+        fx["camera"] = name
+        fx["scene_radius"] = cam["reach"]
+        return list(cam["pivot"])
+
+    @staticmethod
+    def drop_camera(fx):
+        fx.pop("camera", None)  # keeps its camera distance, so unlocking never changes how it looks
+
+    def relink(self, cams, changed, skip):
+        """Re-render every other 3D object locked to a camera that changed (or was deleted)."""
+        for res in self.svg.xpath("//svg:g[@%s]" % RESULT_ATTR):
+            if res in skip:
+                continue
+            fx = self.stored_settings(res)
+            name = fx.get("camera")
+            if not name or name not in changed:
+                continue
+            src = res.find(".//{%s}path[@class='%s']" % (SVG_NS, SOURCE_CLASS))
+            if src is None:
+                continue
+            subs = self.world_subpaths(src)
+            if not subs:
+                continue
+            fill = fx.pop("fill", None)
+            if name in cams:
+                pivot = self.use_camera(fx, name, cams[name])
+            else:  # the camera was deleted: keep the object where it is, on its own view
+                self.drop_camera(fx)
+                pivot = self.stored_pivot(res, subs)
+            self.render_one(src, res, subs, fx, fill, pivot)
+
+    def camera_places(self, plan):
+        """Where a new camera can turn around: the page's center or the selection's center, and the scene's reach."""
+        pages = self.page_rects()
+        boxes = [E.path_bbox(subs) for _, _, subs, _ in plan]
+        boxes = [b for b in boxes if b]
+        sel = [min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)]
+        page = [pages[0][0], pages[0][1], pages[0][0] + pages[0][2], pages[0][1] + pages[0][3]] if pages else sel
+        center = lambda b: [round((b[0] + b[2]) / 2, 4), round((b[1] + b[3]) / 2, 4)]  # noqa: E731
+        reach = max(math.hypot(page[2] - page[0], page[3] - page[1]), math.hypot(sel[2] - sel[0], sel[3] - sel[1])) / 2
+        return {"page": center(page), "selection": center(sel)}, round(reach, 4)
+
     def editor_window(self):
         """Extensions › Vector 3Dit › 3D Editor…: every setting in one window with a trackball and a live preview."""
         plan, _ = self.plan()
@@ -474,40 +538,76 @@ class Vector3Dit(inkex.EffectExtension):
             items.append({"src": src, "res": res, "subs": subs, "pivot": pivot, "base": base, "fill": fill,
                           "color": fill or self.fill_of(src), "opacity": opacity, "cache": {}})
 
+        cams = self.load_cameras()
+        # Other 3D objects locked to a saved camera turn along in the preview when that camera changes.
+        chosen = {item["res"] for item in items if item["res"] is not None}
+        passive = []
+        for res in self.svg.xpath("//svg:g[@%s]" % RESULT_ATTR):
+            base = self.stored_settings(res)
+            if res in chosen or base.get("camera") not in cams:
+                continue
+            src = res.find(".//{%s}path[@class='%s']" % (SVG_NS, SOURCE_CLASS))
+            subs = self.world_subpaths(src) if src is not None else None
+            if not subs:
+                continue
+            fill = base.pop("fill", None)
+            base = dict(defaults, **base)
+            base["light"] = dict(defaults["light"], **(base.get("light") or {}))
+            try:
+                opacity = float(src.specified_style().get("opacity", 1) or 1)
+            except ValueError:
+                opacity = 1.0
+            passive.append({"src": src, "res": res, "subs": subs, "pivot": None, "base": base, "fill": fill,
+                            "color": fill or self.fill_of(src), "opacity": opacity, "cache": {}, "passive": True})
+
         first = items[0]
         init = self.to_ui(first["base"])
+        init["camera"] = first["base"].get("camera") if first["base"].get("camera") in cams else ""
+        init["cameras"] = json.loads(json.dumps(cams))
+        init["camera_places"], init["camera_reach"] = self.camera_places(plan)
         if init.get("kind") not in E.KINDS:
             init["kind"] = "extrude"
         init["fill"] = first["color"]
         init["opacity"] = first["opacity"] * 100
 
         def settings_for(item, state, touched):
+            """(settings, turning point) for an object with the window's current state."""
             fx = dict(item["base"])
-            updates, light = self.from_ui(state, touched)
-            fx.update(updates)
-            fx["light"] = dict(item["base"]["light"], **light)
-            return fx
+            if not item.get("passive"):
+                updates, light = self.from_ui(state, touched)
+                fx.update(updates)
+                fx["light"] = dict(item["base"]["light"], **light)
+                name = state.get("camera") if "camera" in touched else fx.get("camera")
+            else:
+                name = fx.get("camera")
+            cameras = state.get("cameras") or {}
+            if name and name in cameras:
+                return fx, self.use_camera(fx, name, cameras[name])
+            self.drop_camera(fx)
+            return fx, item["pivot"]
 
         def look(item, state, touched):
+            if item.get("passive"):
+                return item["color"], item["opacity"]
             color = state["fill"] if "fill" in touched else item["color"]
             opacity = state["opacity"] / 100.0 if "opacity" in touched else item["opacity"]
             return color, max(0.0, min(1.0, opacity))
 
         def render(state, touched, draft):
             outs = []
-            for i, item in enumerate(items):
-                fx = settings_for(item, state, touched)
+            for i, item in enumerate(items + passive):
+                fx, pivot = settings_for(item, state, touched)
                 if draft:  # while dragging: flat shading and no seam strokes, about twice as fast
                     fx["smooth"] = False
                     fx["seam"] = 0
                 color, opacity = look(item, state, touched)
                 out = E.render(item["subs"], fx, fill=color, opacity=opacity, id_prefix="p%d" % i,
-                               pivot=item["pivot"], mesh_cache=item["cache"])
+                               pivot=pivot, mesh_cache=item["cache"])
                 outs.append((out, opacity))
             return outs
 
         selected = set()
-        for item in items:
+        for item in items + passive:
             selected.add(item["res"] if item["res"] is not None else item["src"])
         context = self.context_shapes(selected)
         try:
@@ -530,13 +630,20 @@ class Vector3Dit(inkex.EffectExtension):
             if "opacity" in touched:
                 src.style["opacity"] = E.fmt(opacity, 3)
             if touched & {"edges", "edge_color", "edge_width"}:  # the shape keeps its stroke, also after Remove 3D
-                fx = settings_for(item, state, touched)
+                fx = settings_for(item, state, touched)[0]
                 if fx.get("edges", "none") == "none":
                     src.style["stroke"] = "none"
                 else:
                     src.style["stroke"] = fx["edge_color"]
                     src.style["stroke-width"] = E.fmt(fx["edge_width"] / max(1e-9, self.scale_of(src)), 4)
-            self.render_one(src, item["res"], item["subs"], settings_for(item, state, touched), material, item["pivot"])
+            fx, pivot = settings_for(item, state, touched)
+            self.render_one(src, item["res"], item["subs"], fx, material, pivot)
+        # Saved cameras live in the document; objects locked to a changed camera follow it.
+        new_cams = state.get("cameras") or {}
+        changed = {n for n in set(cams) | set(new_cams) if cams.get(n) != new_cams.get(n)}
+        if changed:
+            self.save_cameras(new_cams)
+            self.relink(new_cams, changed, [item["res"] for item in items])
         light_keys = [k for k in touched if k.startswith("light_")]
         if state.get("shared_light", True) and light_keys:
             self.share_light(self.from_ui(state, light_keys)[1], [item["res"] for item in items])

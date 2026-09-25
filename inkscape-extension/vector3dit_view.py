@@ -675,6 +675,8 @@ class EditorWindow(Gtk.Window):
         super().__init__(title="Vector 3Dit · 3D Editor")
         self.state = dict(init)
         self.state.setdefault("shared_light", True)
+        self.state.setdefault("cameras", {})
+        self.state.setdefault("camera", "")
         self.touched = set()
         self.render_cb = render_cb
         self.context = context
@@ -1026,8 +1028,107 @@ class EditorWindow(Gtk.Window):
         self.stack.set_visible_child_name(key)
         self.paint_icons()
 
+    def build_camera(self):
+        """Saved scene cameras: lock several objects to one vantage point."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.cam_combo = Gtk.ComboBoxText()
+        self.cam_combo.set_tooltip_text("Lock the selected objects to a saved camera, so they share one vantage point")
+        self.cam_combo.connect("changed", self.on_camera_combo)
+        row.pack_start(self.cam_combo, True, True, 0)
+
+        save = styled(Gtk.MenuButton(), "btn", "small")
+        save.add(label("Save…", xalign=0.5))
+        save.set_tooltip_text("Save the current view as a camera and lock the selected objects to it")
+        pop = Gtk.Popover()
+        styled(pop, "v3d-pop")
+        form = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        for m in ("start", "end", "top", "bottom"):
+            getattr(form, "set_margin_" + m)(6)
+        form.pack_start(label("Save as camera", "cp-title"), False, False, 0)
+        self.cam_name = Gtk.Entry()
+        self.cam_name.set_placeholder_text("Camera name, e.g. Street view")
+        self.cam_name.set_width_chars(24)
+        form.pack_start(self.cam_name, False, False, 0)
+        form.pack_start(label("Turn everything around", "sub-label"), False, False, 0)
+        self.cam_around = Gtk.ComboBoxText()
+        self.cam_around.append("page", "The page's center")
+        self.cam_around.append("selection", "The selection's center")
+        self.cam_around.set_active_id("page")
+        form.pack_start(self.cam_around, False, False, 0)
+        ok = styled(Gtk.Button(label="Save camera"), "btn", "primary")
+
+        def do_save(*_):
+            name = self.cam_name.get_text().strip()
+            if name:
+                self.save_camera(name, self.cam_around.get_active_id() or "page")
+                pop.popdown()
+
+        ok.connect("clicked", do_save)
+        self.cam_name.connect("activate", do_save)
+        form.pack_start(ok, False, False, 0)
+        form.show_all()
+        pop.add(form)
+        save.set_popover(pop)
+        self.cam_save_button = save
+        row.pack_start(save, False, False, 0)
+
+        delete = styled(Gtk.Button(label="Delete"), "btn", "small", "ghost")
+        delete.set_tooltip_text("Delete this camera. Objects locked to it keep their current look.")
+        delete.connect("clicked", lambda *_: self.delete_camera())
+        row.pack_start(self.when(delete, lambda s: bool(s.get("camera"))), False, False, 0)
+        box.pack_start(self.row("Camera", row), False, False, 0)
+        self.cam_note = label("", wrap=True, width=46)
+        note = styled(Gtk.Box(), "tip")
+        note.pack_start(self.cam_note, True, True, 0)
+        box.pack_start(self.when(note, lambda s: bool(s.get("camera"))), False, False, 0)
+        self.refresh_cameras()
+        return box
+
+    def refresh_cameras(self):
+        self._syncing = True
+        self.cam_combo.remove_all()
+        self.cam_combo.append("", "Own view (not locked)")
+        for name in sorted(self.state.get("cameras") or {}):
+            self.cam_combo.append(name, "Locked: " + name)
+        self.cam_combo.set_active_id(self.state.get("camera") or "")
+        self._syncing = False
+        name = self.state.get("camera")
+        if name:
+            self.cam_note.set_text("Locked to the camera \u201c%s\u201d. Every object locked to it is seen from the same "
+                                   "point, with the same angles and perspective. Turning here turns them all." % name)
+
+    def on_camera_combo(self, combo):
+        if self._syncing:
+            return
+        name = combo.get_active_id() or ""
+        cam = (self.state.get("cameras") or {}).get(name)
+        values = {"camera": name}
+        if cam:
+            values.update({k: cam[k] for k in ("rx", "ry", "rz", "persp")})
+        self.set_values(values)
+        self.refresh_cameras()
+
+    def save_camera(self, name, around):
+        cams = self.state.setdefault("cameras", {})
+        cams[name] = {"rx": self.state["rx"], "ry": self.state["ry"], "rz": self.state["rz"], "persp": self.state["persp"],
+                      "pivot": list(self.state["camera_places"][around]), "reach": self.state["camera_reach"]}
+        self.touched.add("cameras")
+        self.set_values({"camera": name})
+        self.refresh_cameras()
+
+    def delete_camera(self):
+        name = self.state.get("camera")
+        if not name:
+            return
+        (self.state.get("cameras") or {}).pop(name, None)
+        self.touched.add("cameras")
+        self.set_values({"camera": ""})
+        self.refresh_cameras()
+
     def build_view(self):
         page = self.page()
+        page.pack_start(self.build_camera(), False, False, 0)
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self.trackball = Trackball(self)
         row.pack_start(self.trackball, False, False, 0)
@@ -1272,6 +1373,10 @@ class EditorWindow(Gtk.Window):
             self.state[key] = value
             if key != "shared_light":
                 self.touched.add(key)
+        cam = (self.state.get("cameras") or {}).get(self.state.get("camera") or "")
+        if cam is not None and any(k in values for k in ("rx", "ry", "rz", "persp")):
+            cam.update({k: self.state[k] for k in ("rx", "ry", "rz", "persp")})  # turning a locked object turns the camera
+            self.touched.add("cameras")
         keys = set(values)
         if keys & {"edges", "edge_color"}:
             keys.add("stroke")
@@ -1582,6 +1687,12 @@ def _autotest(win, script):
         win.end_turn()
     if script.get("material"):
         win.apply_material(script["material"])
+    if script.get("save_camera"):
+        win.save_camera(script["save_camera"], script.get("around", "page"))
+    if "use_camera" in script:
+        win.cam_combo.set_active_id(script["use_camera"])
+    if script.get("delete_camera"):
+        win.delete_camera()
     if script.get("set"):
         win.set_values(script["set"])
     if script.get("tab"):

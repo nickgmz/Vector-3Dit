@@ -12,7 +12,7 @@ Every picture is a real screenshot of the editor.
 [3 Turn it](#3-turn-it-in-space-view-tab) · [4 Shape](#4-choose-how-it-becomes-3d-shape-tab) ·
 [5 Surface](#5-pick-a-material-surface-tab) · [6 Colors](#6-color-each-side-colors-tab) · [7 Light](#7-aim-the-light-light-tab) ·
 [8 Outline & shadow](#8-add-lines-and-a-shadow-outline-tab) · [9 Style](#9-fill-stroke-and-opacity-style-tab) ·
-[10 Groups](#10-groups-and-several-objects) · [11 Edit later](#11-apply-edit-later-or-undo) · [12 Shortcuts](#12-shortcuts)
+[10 Groups](#10-groups-and-several-objects) · [11 Cameras](#11-one-camera-for-the-whole-scene) · [12 Edit later](#12-apply-edit-later-or-undo) · [13 Shortcuts](#13-shortcuts)
 
 ---
 
@@ -137,7 +137,24 @@ With several objects selected, a color you set applies to all of them.
 
 ![A two-shape logo group turned to Isometric left in one step](images/10-group.png)
 
-## 11. Apply, edit later, or undo
+## 11. One camera for the whole scene
+
+When a scene has many objects, for example a street of buildings, they should all be seen from the same spot.
+Save the view as a **camera** and lock the objects to it.
+
+1. Select the objects, set up the view on the **View** tab, then click **Save…** next to **Camera**.
+2. Type a name, like *Street view*, and choose what everything turns around: the page's center or the selection's center. Click **Save camera**.
+3. To add more objects later, select them, open the 3D Editor and pick the camera from the **Camera** list.
+
+Every object locked to a camera shares its angles, its turning point and its perspective, so all the lines run to the same vanishing points.
+**Turning one locked object turns them all.** The preview shows the whole scene moving together, and Apply updates every locked object in the drawing.
+
+> Pick **Own view (not locked)** to unlock the selection, or **Delete** to remove the camera. Unlocked objects keep exactly how they look.
+> Cameras are saved in the Inkscape file, so they're still there next time.
+
+![The View tab locked to the camera "Street": a heart, a box and a ball seen from one vantage point](images/11-camera.png)
+
+## 12. Apply, edit later, or undo
 
 - **Apply** puts the result in your drawing as a group of plain vector shapes. You can move, scale and export it like anything else.
 - **Edit it again:** select the 3D object and open the 3D Editor. It opens with that object's current settings.
@@ -146,7 +163,7 @@ With several objects selected, a color you set applies to all of them.
 - **Edit the outline:** Remove 3D, reshape the path with Inkscape's tools, then open the 3D Editor again.
 - **Detach it for good:** ungroup the result and delete the hidden `v3d-source` path. After that it can't be re-edited.
 
-## 12. Shortcuts
+## 13. Shortcuts
 
 | In the 3D Editor | Does |
 | --- | --- |

@@ -212,6 +212,34 @@ def test_editor_window():
     check(p.returncode == 0 and json.loads(framed.get("data-v3d"))["edges"] == "none" and "stroke:none" in style,
           "stroke None removes the outline and the shape's stroke", style)
 
+    # Saved cameras: lock two shapes to one camera, lock a third later, turn one and all follow; delete keeps them.
+    c1, c2, c3, c4 = (os.path.join(tmp, n) for n in ("c1.svg", "c2.svg", "c3.svg", "c4.svg"))
+    p = run_window({"preset": "iso-r", "set": {"persp": 40}, "save_camera": "Street", "apply": True},
+                   ["--id=heart", "--id=box"], src, c1)
+    doc = etree.parse(c1)
+    cams = json.loads(doc.getroot().get("data-v3d-cameras") or "{}")
+    locked = [json.loads(g.get("data-v3d")) for g in doc.xpath("//svg:g[@data-v3d]", namespaces=ns)]
+    check(p.returncode == 0 and "Street" in cams and len(locked) == 2 and all(f.get("camera") == "Street" for f in locked),
+          "save a camera and lock the selection to it", p.stderr[-300:] or str(cams))
+    p = run_window({"use_camera": "Street", "apply": True}, ["--id=framed"], c1, c2)
+    doc = etree.parse(c2)
+    fx = {g.get("id"): json.loads(g.get("data-v3d")) for g in doc.xpath("//svg:g[@data-v3d]", namespaces=ns)}
+    check(p.returncode == 0 and len(fx) == 3 and len({(round(f["rx"], 3), round(f["ry"], 3), f.get("scene_radius")) for f in fx.values()}) == 1,
+          "lock another shape to the saved camera", str([(f.get("camera"), f["rx"]) for f in fx.values()]))
+    one = sorted(fx)[0]
+    p = run_window({"drag": [[-50, 10]], "apply": True}, ["--id=" + one], c2, c3)
+    doc = etree.parse(c3)
+    after = {g.get("id"): json.loads(g.get("data-v3d")) for g in doc.xpath("//svg:g[@data-v3d]", namespaces=ns)}
+    cam = json.loads(doc.getroot().get("data-v3d-cameras"))["Street"]
+    check(p.returncode == 0 and all(abs(f["rx"] - cam["rx"]) < 1e-6 and abs(f["ry"] - cam["ry"]) < 1e-6 for f in after.values())
+          and abs(cam["ry"] - fx[one]["ry"]) > 1, "turning one locked object turns every object on its camera")
+    p = run_window({"delete_camera": True, "apply": True}, ["--id=" + one], c3, c4)
+    doc = etree.parse(c4)
+    left = [json.loads(g.get("data-v3d")) for g in doc.xpath("//svg:g[@data-v3d]", namespaces=ns)]
+    check(p.returncode == 0 and doc.getroot().get("data-v3d-cameras") is None and len(left) == 3
+          and all(f.get("camera") is None for f in left) and all(abs(f["rx"] - cam["rx"]) < 1e-6 for f in left),
+          "deleting a camera unlocks its objects and leaves them as they are")
+
     # Shared scene light: changing the light on one object relights every 3D object; switched off, only the selection.
     box_id = [k for k in results if k != res_id][0]
     out6, out7 = os.path.join(tmp, "6.svg"), os.path.join(tmp, "7.svg")
