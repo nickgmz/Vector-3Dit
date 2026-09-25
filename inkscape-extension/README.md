@@ -6,17 +6,19 @@ uses the same 3D engine as the web app, ported to Python, so both give the same 
 
 ## Install
 
-Requires **Inkscape 1.2 or newer**. Nothing else to install.
+Requires **Inkscape 1.2 or newer**. Nothing else to install: Inkscape brings its own Python.
 
 1. Find your user extensions folder. In Inkscape, open **Edit › Preferences › System** and look at **User extensions**. It is usually:
    - Windows: `%APPDATA%\inkscape\extensions`
    - macOS: `~/Library/Application Support/org.inkscape.Inkscape/config/inkscape/extensions`
-   - Linux: `~/.config/inkscape/extensions`
-2. Copy these files into that folder (all at the top level, not in a subfolder of their own):
+   - Linux: `~/.config/inkscape/extensions` (Flatpak: `~/.var/app/org.inkscape.Inkscape/config/inkscape/extensions`; Snap: `~/snap/inkscape/current/.config/inkscape/extensions`)
+2. Make a folder named `vector3dit` inside it and copy these files into that folder:
    - `vector3dit.py`
    - `vector3dit_engine.py`
    - `vector3dit_extrude.inx`, `vector3dit_revolve.inx`, `vector3dit_inflate.inx`, `vector3dit_flat.inx`, `vector3dit_remove.inx`
-3. Restart Inkscape. The effects appear under **Extensions › Vector 3Dit**.
+
+   The `.inx` files and both `.py` files must sit in the same folder. It's fine to put them straight into `extensions` without the subfolder.
+3. Quit Inkscape completely and start it again. The effects appear under **Extensions › Vector 3Dit**.
 
 ## Use
 
