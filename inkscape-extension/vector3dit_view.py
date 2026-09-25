@@ -921,6 +921,7 @@ class EditorWindow(Gtk.Window):
 
     def bevel_picker(self):
         btn = styled(Gtk.MenuButton(), "bevel-btn")
+        self.bevel_button = btn
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         thumb = Gtk.Image()
         name = label("", xalign=0)
@@ -1383,6 +1384,8 @@ def _autotest(win, script):
         win.set_values(script["set"])
     if script.get("tab"):
         win.show_tab(script["tab"])
+    if script.get("bevel_menu"):
+        win.bevel_button.set_active(True)
 
     def finish():
         win.render(draft=False)
