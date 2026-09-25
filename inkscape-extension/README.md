@@ -56,7 +56,7 @@ The **Flat / Extrude / Revolve / Inflate** buttons sit at the top, and tabs belo
 Color buttons open the web app's color picker (color square, hue, hex code and palette) inside the window.
 Controls that don't apply are hidden, as in the web app. For example, the bevel settings only show when a bevel is picked.
 
-The **preview** shows the selected objects in 3D, in place on the page, with the rest of your drawing faded behind them, so you can line them up with other artwork. Scroll to zoom, right-drag to pan, or use **Fit selection** and **Fit page**.
+The **preview** shows the selected objects in 3D, in place on the page, with the rest of your drawing faded behind them, so you can line them up with other artwork. Tick **Full color** to see the rest of the drawing in its real colors. Scroll to zoom, right-drag to pan, or use **Fit selection** and **Fit page**.
 
 Click **Apply** to write the result into the drawing, or **Cancel** to leave it unchanged. With several objects selected, what you change applies to all of them. Settings you don't touch stay as each object has them. Plain shapes start as extrusions.
 

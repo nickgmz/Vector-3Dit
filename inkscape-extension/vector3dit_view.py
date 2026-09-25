@@ -934,6 +934,12 @@ class EditorWindow(Gtk.Window):
         self.show_ctx.set_tooltip_text("Show the rest of the drawing, faded, to help with placement")
         self.show_ctx.connect("toggled", lambda *_: self.queue_preview())
         bar.pack_start(self.show_ctx, False, False, 4)
+        self.full_ctx = Gtk.CheckButton(label="Full color")
+        self.full_ctx.set_active(False)
+        self.full_ctx.set_tooltip_text("Show the rest of the drawing in its real colors instead of faded")
+        self.full_ctx.connect("toggled", lambda *_: self.queue_preview())
+        self.show_ctx.connect("toggled", lambda b: self.full_ctx.set_sensitive(b.get_active()))
+        bar.pack_start(self.full_ctx, False, False, 4)
         for text, what in (("Fit selection", "sel"), ("Fit page", "page")):
             b = styled(Gtk.Button(label=text), "btn", "small")
             b.connect("clicked", lambda _b, w=what: self.fit(w))
@@ -1478,7 +1484,8 @@ class EditorWindow(Gtk.Window):
 
     def context_pixbuf(self):
         """Desk, pages and the rest of the drawing, cached until the view moves."""
-        key = (self._size, tuple(self.view), self.show_ctx.get_active())
+        full = self.full_ctx.get_active()
+        key = (self._size, tuple(self.view), self.show_ctx.get_active(), full)
         if self._context_cache and self._context_cache[0] == key:
             return self._context_cache[1]
         s, tx, ty = self.view
@@ -1490,7 +1497,7 @@ class EditorWindow(Gtk.Window):
                        % (f(x + 2 / s), f(y + 3 / s), f(w), f(h)))
             out.append('<rect x="%s" y="%s" width="%s" height="%s" fill="#ffffff"/>' % (f(x), f(y), f(w), f(h)))
         if self.show_ctx.get_active() and self.context:
-            out.append('<g opacity="0.32" stroke-linejoin="round">')
+            out.append('<g opacity="%s" stroke-linejoin="round">' % ("1" if full else "0.32"))
             for item in self.context:
                 if not item.get("d"):
                     continue
@@ -1581,6 +1588,8 @@ def _autotest(win, script):
         win.show_tab(script["tab"])
     if script.get("bevel_menu"):
         win.bevel_button.set_active(True)
+    if script.get("full_color"):
+        win.full_ctx.set_active(True)
     if script.get("color_picker"):
         win.color_buttons[script["color_picker"]].clicked()
         if script.get("pick"):
