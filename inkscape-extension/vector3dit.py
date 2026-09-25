@@ -374,6 +374,9 @@ class Vector3Dit(inkex.EffectExtension):
         """Extensions › Vector 3Dit › Rotate in 3D…: turn objects with a trackball and a live preview."""
         plan, _ = self.plan()
         try:
+            import warnings
+
+            warnings.simplefilter("ignore", ImportWarning)
             import vector3dit_view as V  # GTK is only needed for this window.
         except (ImportError, ValueError) as err:
             raise inkex.AbortExtension(
@@ -416,8 +419,9 @@ class Vector3Dit(inkex.EffectExtension):
             outs = []
             for i, item in enumerate(items):
                 fx = settings_for(item, state, touched)
-                if draft:
+                if draft:  # while dragging: flat shading and no seam strokes, about twice as fast
                     fx["smooth"] = False
+                    fx["seam"] = 0
                 out = E.render(item["subs"], fx, fill=item["color"], opacity=item["opacity"], id_prefix="p%d" % i,
                                pivot=item["pivot"], mesh_cache=item["cache"])
                 outs.append((out, item["opacity"]))
@@ -427,7 +431,11 @@ class Vector3Dit(inkex.EffectExtension):
         for item in items:
             selected.add(item["res"] if item["res"] is not None else item["src"])
         context = self.context_shapes(selected)
-        result = V.run(init, render, context, self.page_rects(), V.rgb(items[0]["color"]), len(items))
+        try:
+            result = V.run(init, render, context, self.page_rects(), V.rgb(items[0]["color"]), len(items))
+        except RuntimeError as err:
+            raise inkex.AbortExtension("The Rotate in 3D window can't open: %s. You can still set the angles on the "
+                                       "View tab of the other Vector 3Dit effects." % err)
         if result is None:
             return False  # Cancel: leave the document untouched.
         state, touched = result

@@ -148,10 +148,14 @@ def test_rotate_window():
     check(p.returncode == 0, "setup: extrude the heart", p.stderr[-300:])
     res_id = etree.parse(out1).xpath("//svg:g[@data-v3d]", namespaces=ns)[0].get("id")
 
+    # Block pycairo, which is broken in some Inkscape builds on Windows: the window must not need it.
+    no_cairo = ("import runpy, sys; sys.modules['cairo'] = None; sys.argv = sys.argv[1:]; "
+                "sys.path.insert(0, %r); runpy.run_path(sys.argv[0], run_name='__main__')" % EXT)
+
     def run_window(script, args, inp, out):
         env = dict(os.environ, VECTOR3DIT_AUTOTEST=json.dumps(script))
-        return subprocess.run(cmd + [os.path.join(EXT, "vector3dit.py"), "--kind=rotate"] + args + ["--output=" + out, inp],
-                              capture_output=True, text=True, env=env, timeout=120)
+        return subprocess.run(cmd + ["-c", no_cairo, os.path.join(EXT, "vector3dit.py"), "--kind=rotate"] + args +
+                              ["--output=" + out, inp], capture_output=True, text=True, env=env, timeout=120)
 
     p = run_window({"drag": [[40, -20]], "apply": True}, ["--id=" + res_id, "--id=box"], out1, out2)
     check(p.returncode == 0 and not p.stderr.strip(), "rotate window applies without errors", p.stderr[-500:])
