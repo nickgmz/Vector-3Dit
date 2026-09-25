@@ -1176,20 +1176,36 @@ def quant(u, steps):
 # --------------------------------------------------------------------------
 
 
-def render(subs, fx_in, fill="#f2a541", opacity=1.0, id_prefix="v3d", pivot=None):
+# Settings that only change how a mesh is viewed or painted, not its shape.
+VIEW_KEYS = frozenset(("rx", "ry", "rz", "persp", "shading", "smooth", "steps", "side_color", "bevel_color",
+                       "back_color", "shadow_tint", "highlight", "light", "edges", "edge_color", "edge_width",
+                       "crease_angle", "shadow", "shadow_opacity", "shadow_blur", "shadow_dist", "shadow_color",
+                       "seam", "fill"))
+
+
+def render(subs, fx_in, fill="#f2a541", opacity=1.0, id_prefix="v3d", pivot=None, mesh_cache=None):
     """Render shapes with 3D settings `fx_in`. Returns dict(defs, body, bbox, faces).
 
     `defs` is a list of gradient/filter markup strings (place them in <defs>),
     `body` the markup of the faces (place it in a <g>). Coordinates are in the
-    same space as `subs`.
+    same space as `subs`. Pass the same dict as `mesh_cache` on repeated calls
+    with the same `subs` list to skip rebuilding the mesh when only the view changes.
     """
     fx = defaults(fx_in.get("kind", "extrude"))
     fx.update({k: v for k, v in fx_in.items() if k != "light"})
     fx["light"] = dict(defaults()["light"], **(fx_in.get("light") or {}))
-    geom = prepare(subs, fx)
-    if not geom or (not geom["rings"] and not geom["open"]):
+    key = None
+    if mesh_cache is not None:
+        key = (id(subs), repr(sorted((k, v) for k, v in fx.items() if k not in VIEW_KEYS)))
+    if key in (mesh_cache or {}):
+        geom, mesh = mesh_cache[key]
+    else:
+        geom = prepare(subs, fx)
+        mesh = build_mesh(geom, fx) if geom and (geom["rings"] or geom["open"]) else None
+        if key is not None:
+            mesh_cache[key] = (geom, mesh)
+    if mesh is None:
         return {"defs": [], "body": "", "bbox": None, "faces": 0}
-    mesh = build_mesh(geom, fx)
     gcx, gcy = geom["center"]
     cx, cy = pivot if pivot else geom["center"]
     off = [gcx - cx, cy - gcy, 0.0]

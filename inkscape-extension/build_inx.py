@@ -102,6 +102,9 @@ SHAPE_PAGES = {
 TITLES = {"extrude": "Extrude", "revolve": "Revolve", "inflate": "Inflate", "flat": "Flat tilt"}
 
 VIEW_PAGE = page("view", "View", [
+    boolean("keep_rotation", "Objects that are already 3D keep their rotation", True,
+            "Untick to apply the angles below to them too. Tip: Extensions › Vector 3Dit › Rotate in 3D lets you "
+            "drag to turn objects with a live preview."),
     choice("view", "Preset view", VIEWS, "custom"),
     num("rx", "Tilt (X, °)", 20, -180, 180),
     num("ry", "Turn (Y, °)", -30, -180, 180),
@@ -147,6 +150,7 @@ EXTRAS_PAGE = page("extras", "Outlines & shadow", [
 HELP_PAGE = page("help", "Help", [
     label("Select shapes (or a group) and run the effect. Text must be converted first: Path › Object to Path."),
     label("The result is a group of plain vector faces. It keeps the original shape hidden inside, so running any Vector 3Dit effect on it again re-renders it with the new settings."),
+    label("Extensions › Vector 3Dit › Rotate in 3D opens a window with a trackball and a live preview: drag to turn objects and see where they land on the page."),
     label("Extensions › Vector 3Dit › Remove 3D puts the original flat shape back."),
     label("Tip: tick Live preview to see changes as you edit."),
 ])
@@ -190,10 +194,29 @@ REMOVE_INX = """<?xml version="1.0" encoding="UTF-8"?>
 </inkscape-extension>
 """
 
+ROTATE_INX = """<?xml version="1.0" encoding="UTF-8"?>
+<inkscape-extension xmlns="http://www.inkscape.org/namespace/inkscape/extension">
+  <name>Rotate in 3D…</name>
+  <id>org.vector3dit.rotate</id>
+  <param name="kind" type="string" gui-hidden="true">rotate</param>
+  <effect needs-live-preview="false">
+    <object-type>all</object-type>
+    <effects-menu>
+      <submenu name="Vector 3Dit"/>
+    </effects-menu>
+  </effect>
+  <script>
+    <command location="inx" interpreter="python">vector3dit.py</command>
+  </script>
+</inkscape-extension>
+"""
+
 if __name__ == "__main__":
     for k in SHAPE_PAGES:
         with open(os.path.join(HERE, "vector3dit_%s.inx" % k), "w", encoding="utf-8") as f:
             f.write(effect_inx(k))
     with open(os.path.join(HERE, "vector3dit_remove.inx"), "w", encoding="utf-8") as f:
         f.write(REMOVE_INX)
-    print("wrote", len(SHAPE_PAGES) + 1, "inx files")
+    with open(os.path.join(HERE, "vector3dit_rotate.inx"), "w", encoding="utf-8") as f:
+        f.write(ROTATE_INX)
+    print("wrote", len(SHAPE_PAGES) + 2, "inx files")
