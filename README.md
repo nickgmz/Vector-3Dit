@@ -14,6 +14,11 @@ style them. The result stays **100% vector**: every face is an SVG shape you can
 Everything runs locally in your browser. Your drawing autosaves in the browser; use **File › Save project** to keep a file.
 Display fonts and the UI font load from Google Fonts when you're online, and fall back to system fonts offline.
 
+### Inkscape extension
+
+The same 3D effects are also available inside Inkscape (1.2 or newer): **Extensions › Vector 3Dit › Extrude / Revolve / Inflate / Flat tilt**.
+See [`inkscape-extension/`](inkscape-extension/) for install steps.
+
 ## Quick start
 
 1. **Draw a shape.** Rectangle (R), Ellipse (E), Star/Polygon (S), Pen (P), Pencil (N) or Text (T) — or **Object › Insert shape** for hearts, clouds, gears, arrows and revolve-ready profiles.
@@ -93,10 +98,12 @@ No build step or dependencies are required. The app is plain JavaScript modules 
   js/                   core geometry, 3D engine, document model, tools and UI
   tests/                Node unit tests for geometry and the 3D engine
   tools/build.mjs       bundles everything into dist/vector-3dit.html
+  inkscape-extension/   the 3D engine ported to Python as an Inkscape extension
 ```
 
 ```sh
 node tests/core.test.cjs   # geometry, paths, curve fitting, tracing
 node tests/mesh.test.cjs   # mesh builders and renderer
 node tools/build.mjs       # rebuild dist/vector-3dit.html
+python3 tests/inkscape.test.py   # Inkscape extension: parity with the JS engine, end-to-end run
 ```

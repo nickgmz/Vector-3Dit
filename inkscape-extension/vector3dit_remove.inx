@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<inkscape-extension xmlns="http://www.inkscape.org/namespace/inkscape/extension">
+  <name>Remove 3D</name>
+  <id>org.vector3dit.remove</id>
+  <param name="kind" type="string" gui-hidden="true">remove</param>
+  <effect needs-live-preview="false">
+    <object-type>all</object-type>
+    <effects-menu>
+      <submenu name="Vector 3Dit"/>
+    </effects-menu>
+  </effect>
+  <script>
+    <command location="inx" interpreter="python">vector3dit.py</command>
+  </script>
+</inkscape-extension>
