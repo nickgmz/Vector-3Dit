@@ -40,16 +40,20 @@ The menu has three entries:
 
 ### The 3D Editor
 
-**Extensions › Vector 3Dit › 3D Editor…** opens one window with everything in it:
+**Extensions › Vector 3Dit › 3D Editor…** opens one window that looks and works like the Vector 3Dit web app's 3D panel.
+The **Flat / Extrude / Revolve / Inflate** buttons sit at the top, and tabs below them hold the tools:
 
-- **Flat / Extrude / Revolve / Inflate** buttons at the top.
-- **View & rotation:** a trackball. Drag the cube to turn the objects: **Shift** locks one axis, **Alt** spins them flat, and the arrow keys turn in 5° steps. You can also drag in the preview itself. There are also **Tilt, Turn, Spin and Perspective** sliders, **Face front**, and 12 **preset views** shown as little cubes.
-- **Shape:** the settings for the current kind: depth, end caps and 6 bevel profiles for Extrude; axis, angle, offset and segments for Revolve; puffiness, profile, roundness, sides and detail for Inflate.
-- **Surface & material:** one-click material presets (Glossy, Clay, Toon, Poster, Chrome, Gold, Copper, Line art, Wireframe, Flat), shading, smooth gradients, color bands and smoothing angle.
-- **Colors:** front, sides, bevel and back colors, highlight color and shadow tone.
-- **Light:** a light sphere (drag the sun to aim the light) plus direction, height, intensity, ambient, fill light, highlight and gloss.
-- **Outlines & shadow:** edge lines, line color and width, crease angle, a shadow cast onto the page or a soft floor shadow (opacity, softness, distance, color), and the seam fix.
-- **Style:** the object's fill, its outline (color and width) and its opacity.
+| Tab | What's in it |
+| --- | --- |
+| **View** | The trackball: drag the cube to turn the objects (**Shift** locks one axis, **Alt** spins them flat, arrow keys turn in 5° steps). Tilt, Turn, Spin and Perspective sliders, **Face front**, and 12 preset views. You can also drag in the preview itself. |
+| **Shape** | Settings for the current kind. Extrude: depth, solid or hollow, the bevel picker (None, Classic, Round, Cove, Ogee, Step, Chisel), bevel size, front or both sides, inward or outward, smoothness. Revolve: axis, angle, offset, segments, cut-end caps. Inflate: puffiness, profile, roundness, sides, detail. |
+| **Surface** | Material swatches (Glossy, Clay, Toon, Poster, Chrome, Gold, Copper, Line art, Wireframe, Flat color), shading, smooth gradients, color bands, smoothing angle. |
+| **Colors** | Front, sides, bevel and back colors (Auto follows the front), shadow tone (tinted, black or custom) and highlight color. |
+| **Light** | **Shared scene light** (on: every 3D object in the drawing gets this light), the light sphere (drag the sun), intensity, ambient, fill light, highlight and gloss. |
+| **Outline** | Edge lines (none, outline, all) with color, width and crease angle; a shadow cast onto the page or a floor shadow, with opacity, softness, distance and color. |
+| **Style** | The object's fill, its outline (on or off, color, width) and its opacity. |
+
+Controls that don't apply are hidden, as in the web app. For example, the bevel settings only show when a bevel is picked.
 
 The **preview** shows the selected objects in 3D, in place on the page, with the rest of your drawing faded behind them, so you can line them up with other artwork. Scroll to zoom, right-drag to pan, or use **Fit selection** and **Fit page**.
 

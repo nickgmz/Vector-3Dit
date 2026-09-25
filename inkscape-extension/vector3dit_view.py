@@ -1,13 +1,14 @@
 """The 3D Editor window for the Inkscape extension (GTK 3).
 
-Every Vector 3Dit setting in one window: kind, a trackball and preset views,
+Every Vector 3Dit setting in one window, organised in tabs and styled like the
+Vector 3Dit web app: kind, view and rotation (trackball and preset views),
 shape, surface and material, colors, light, outlines and shadow, and style,
-with a live preview of the objects in place on the page and the rest of the
-drawing faded behind them.
+next to a live preview of the objects in place on the page.
 
-Everything on screen is drawn as SVG and shown through GdkPixbuf's SVG loader
-(the one GTK uses for its own icons), so the preview is the engine's own output
-and the window needs no cairo bindings, which are broken in some Inkscape builds.
+Everything drawn by the window (preview, trackball, light sphere, thumbnails,
+icons) is SVG shown through GdkPixbuf's SVG loader, the one GTK uses for its
+own icons, so no cairo bindings are needed (they are broken in some Inkscape
+builds on Windows).
 """
 
 import json
@@ -26,38 +27,131 @@ from gi.repository import Gdk, GdkPixbuf, GLib, Gtk  # noqa: E402
 
 import vector3dit_engine as E  # noqa: E402
 
-KINDS = [("flat", "Flat"), ("extrude", "Extrude"), ("revolve", "Revolve"), ("inflate", "Inflate")]
-VIEWS = [("", "Preset view…"), ("front", "Front"), ("offaxis", "Off-axis"), ("offaxis-l", "Off-axis left"),
-         ("hero", "Low angle"), ("iso-l", "Isometric left"), ("iso-r", "Isometric right"), ("iso-t", "Isometric top"),
-         ("top", "Top down"), ("turn-l", "Turned left"), ("turn-r", "Turned right"), ("tilt", "Tilted back"),
-         ("dimetric", "Dimetric")]
-AXIS_HEX = {"x": "#e5534b", "y": "#3fb950", "z": "#4c8df6", "p": "#f2a541"}
-SVG_NS = 'xmlns="http://www.w3.org/2000/svg"'
-DESK = "#2b2e35"
-KIND_ICONS = {
-    "flat": "M8 8H20L16 16H4Z",
-    "extrude": "M12 4 19 8V16L12 20 5 16V8Z M5 8 12 12 19 8 M12 12V20",
-    "revolve": "M10 4H14C14 8 19 11 18 15C17 19 7 19 6 15C5 11 10 8 10 4Z M8 15C10 16 14 16 16 15",
-    "inflate": "M7 19C4 15 4 8 8 5C11 3 15 3 17 6C20 10 20 15 17 19Z",
+# The web app's dark theme ("warm orange on graphite").
+T = {
+    "bg": "#131419", "canvas": "#0e0f13", "panel": "#1a1c22", "panel2": "#22252d", "panel3": "#2b2f39",
+    "line": "#2c303a", "line2": "#3b404d", "text": "#ecebe6", "text2": "#b7bbc5", "muted": "#8a8f9c",
+    "accent": "#f2a541", "accent_text": "#ffc275", "accent_ink": "#241504",
+    "x": "#ef6461", "y": "#62c26a", "z": "#5b9cf5",
+    "tb_side": "#7f8494", "tb_top": "#b5b9c5", "tb_edge": "#0f1014", "sphere": "#c9ccd4", "mat_base": "#a3acbf",
 }
-CSS = b"""
-.v3d-panel { padding: 16px 16px 14px 16px; }
-.v3d-kind button { padding: 6px 4px; min-width: 64px; }
-.v3d-kind button:checked { background-image: none; background-color: #f2a541; color: #231503; border-color: #c77d1b; }
-.v3d-head { font-weight: bold; letter-spacing: 1px; font-size: 0.92em; }
-.v3d-hint { opacity: 0.72; font-size: 0.92em; }
-.v3d-status { opacity: 0.8; font-size: 0.9em; }
-scale.v3d-x trough highlight { background-color: #e5534b; border-color: #e5534b; }
-scale.v3d-y trough highlight { background-color: #3fb950; border-color: #3fb950; }
-scale.v3d-z trough highlight { background-color: #4c8df6; border-color: #4c8df6; }
-scale.v3d-p trough highlight, scale.v3d-d trough highlight { background-color: #f2a541; border-color: #f2a541; }
-.v3d-toolbar { padding: 6px 8px; }
-.v3d-panel spinbutton button { padding: 2px 3px; min-width: 14px; }
-.v3d-panel spinbutton entry { min-width: 0; }
-.v3d-sub { font-weight: bold; opacity: 0.7; font-size: 0.88em; }
-.v3d-chip { padding: 3px 4px; min-height: 0; }
-.v3d-section { padding: 4px 0; }
-"""
+DESK = T["canvas"]
+SVG_NS = 'xmlns="http://www.w3.org/2000/svg"'
+FONT = "'IBM Plex Sans', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
+MONO = "'IBM Plex Mono', Consolas, Menlo, 'DejaVu Sans Mono', monospace"
+
+# Icons from the web app (24×24, stroked with currentColor).
+ICONS = {
+    "flat": '<path d="M3.5 15.5L10 6.5h10.5l-6.5 9z"/><path d="M8 11h3.5" opacity=".6"/>',
+    "extrude": '<path d="M4 8.5L12 4l8 4.5v7L12 20l-8-4.5z"/><path d="M4 8.5l8 4.5 8-4.5M12 13v7"/>',
+    "revolve": '<path d="M9 3.5h6c0 2-2 3-2 5 0 2.5 4 3.5 4 8 0 2.4-2.2 4-5 4s-5-1.6-5-4c0-4.5 4-5.5 4-8 0-2-2-3-2-5z"/>'
+               '<path d="M3.5 12.5c0 1.5 1.5 2.5 3.5 3" stroke-dasharray="1.6 1.8"/><path d="M20.5 12.5c0 1.5-1.5 2.5-3.5 3"/>',
+    "inflate": '<path d="M5.5 9.5C5.5 6 8 4.5 12 4.5s6.5 1.5 6.5 5c0 1.6-.6 2.4-.6 3.6 0 1.5 1.1 2.4 1.1 4 0 2.4-3 3.4-7 3.4s-7-1-7-3.4'
+               'c0-1.6 1.1-2.5 1.1-4 0-1.2-.6-2-.6-3.6z"/><path d="M8.5 8.3c.8-1 2-1.4 3.2-1.4" opacity=".6"/>',
+    "orbit": '<path d="M12 7.5l4.3 2.4v4.8L12 17.1l-4.3-2.4V9.9z"/><path d="M12 12.3l4.3-2.4M12 12.3v4.8M12 12.3L7.7 9.9"/>'
+             '<path d="M4.2 8.2A9 9 0 0 1 17 4.4"/><path d="M15.8 2.6L17.4 4.5 15.4 6"/><path d="M19.8 15.8A9 9 0 0 1 7 19.6"/>'
+             '<path d="M8.2 21.4L6.6 19.5 8.6 18"/>',
+    "cube": '<path d="M12 2.8l8 4.6v9.2l-8 4.6-8-4.6V7.4z"/><path d="M4 7.4l8 4.6 8-4.6M12 12v9.2"/>',
+    "sparkle": '<path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9z"/><path d="M18.5 16l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/>',
+    "palette": '<path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.3 0 1.8-.8 1.8-1.6 0-1.2-1-1.4-1-2.5 0-1 .8-1.6 1.8-1.6H17a3.5 3.5 0 0 0 3.5-3.5'
+               'c0-4.3-3.8-7.8-8.5-7.8z"/><circle cx="7.8" cy="11" r="1.2" fill="currentColor"/><circle cx="10" cy="7.3" r="1.2" '
+               'fill="currentColor"/><circle cx="14.5" cy="7.5" r="1.2" fill="currentColor"/>',
+    "light": '<circle cx="12" cy="12" r="3.8"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7'
+             'M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/>',
+    "shadow": '<circle cx="10" cy="9.5" r="5"/><ellipse cx="13" cy="19" rx="7" ry="1.8" fill="currentColor" fill-opacity=".35"/>',
+    "sliders": '<path d="M5 4v16M12 4v16M19 4v16"/><circle cx="5" cy="15" r="2" fill="currentColor"/><circle cx="12" cy="8" r="2" '
+               'fill="currentColor"/><circle cx="19" cy="13" r="2" fill="currentColor"/>',
+    "rotCCW": '<path d="M5 12a7 7 0 1 0 2.2-5.1"/><path d="M6.5 3v4.5H11"/>',
+    "chevDown": '<path d="M6 9.5l6 6 6-6"/>',
+    "fit": '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+}
+
+CSS = ("""
+.v3d, .v3d-pop, .v3d-pop contents { background-color: %(panel)s; color: %(text)s; }
+.v3d * { font-family: %(font)s; }
+.v3d label { color: %(text2)s; font-size: 12px; }
+.v3d .muted, .v3d .muted label { color: %(muted)s; font-size: 11.5px; }
+.v3d .sub-label { color: %(muted)s; font-size: 11px; font-weight: 600; letter-spacing: 1px; margin-top: 4px; }
+.v3d .tip { background-color: rgba(242, 165, 65, 0.14); border-radius: 7px; padding: 8px 10px; }
+.v3d .tip label { color: %(text2)s; }
+.v3d .preview-bar { background-color: %(panel)s; border-bottom: 1px solid %(line)s; padding: 6px 10px; }
+.v3d .panel-head { padding: 12px 14px 0 14px; }
+.v3d .tabs { padding: 6px; border-bottom: 1px solid %(line)s; }
+.v3d .page { padding: 12px 14px 16px 14px; }
+.v3d .footer { border-top: 1px solid %(line)s; padding: 10px 14px; }
+.v3d separator { background-color: %(line)s; min-width: 1px; min-height: 1px; }
+.v3d button { background-image: none; box-shadow: none; text-shadow: none; outline-color: %(accent)s; }
+.v3d .tab { background-color: transparent; border: none; border-radius: 7px; padding: 5px 2px 4px 2px; min-height: 0; }
+.v3d .tab label { color: %(muted)s; font-size: 11.5px; font-weight: 500; }
+.v3d .tab:hover { background-color: %(panel3)s; }
+.v3d .tab:hover label { color: %(text)s; }
+.v3d .tab:checked { background-color: rgba(242, 165, 65, 0.14); }
+.v3d .tab:checked label { color: %(accent_text)s; }
+.v3d .seg { background-color: %(panel2)s; border: 1px solid %(line2)s; border-radius: 7px; padding: 2px; }
+.v3d .seg button { background-color: transparent; border: none; border-radius: 5px; padding: 3px 6px; min-height: 0; min-width: 0; }
+.v3d .seg button label { color: %(text2)s; font-size: 12px; }
+.v3d .seg button:hover { background-color: %(panel3)s; }
+.v3d .seg button:hover label { color: %(text)s; }
+.v3d .seg button:checked { background-color: %(accent)s; }
+.v3d .seg button:checked label { color: %(accent_ink)s; font-weight: 600; }
+.v3d .kinds button { padding: 6px 2px 5px 2px; }
+.v3d .kinds button label { font-size: 11.5px; }
+.v3d .tile, .v3d-pop .tile { background-color: %(panel2)s; border: 1px solid %(line)s; border-radius: 7px; padding: 5px 2px 4px 2px; min-height: 0; min-width: 0; }
+.v3d .tile label, .v3d-pop .tile label { color: %(text2)s; font-size: 10.5px; }
+.v3d .tile:hover, .v3d-pop .tile:hover, .v3d-pop .tile:checked { border-color: %(accent)s; }
+.v3d .tile:hover label, .v3d-pop .tile:hover label { color: %(text)s; }
+.v3d-pop .tile { background-color: %(panel)s; font-size: 11px; }
+.v3d-pop { border: 1px solid %(line2)s; border-radius: 9px; padding: 6px; }
+.v3d .btn { background-color: %(panel2)s; border: 1px solid %(line2)s; border-radius: 7px; padding: 0 11px; min-height: 28px; }
+.v3d .btn label { color: %(text)s; font-size: 12.5px; }
+.v3d .btn:hover { background-color: %(panel3)s; }
+.v3d .btn.small { min-height: 26px; padding: 0 9px; }
+.v3d .btn.small label { font-size: 12px; }
+.v3d .btn.ghost { background-color: transparent; border-color: transparent; }
+.v3d .btn.ghost:hover { background-color: %(panel3)s; }
+.v3d .btn.primary { background-color: %(accent)s; border-color: %(accent)s; }
+.v3d .btn.primary label { color: %(accent_ink)s; font-weight: 600; }
+.v3d .btn.primary:hover { background-color: #ffbe63; }
+.v3d .swatch { background-color: %(panel2)s; border: 1px solid %(line2)s; border-radius: 7px; padding: 0 8px 0 4px; min-height: 28px; }
+.v3d .swatch:hover { border-color: %(muted)s; }
+.v3d .swatch label { font-family: %(mono)s; font-size: 11.5px; color: %(text2)s; }
+.v3d .bevel-btn { background-color: %(panel2)s; border: 1px solid %(line2)s; border-radius: 7px; padding: 0 8px 0 3px; min-height: 34px; }
+.v3d .bevel-btn label { color: %(text)s; font-size: 12.5px; }
+.v3d spinbutton { color: %(text)s; background-color: %(panel2)s; border: 1px solid %(line2)s; border-radius: 6px; box-shadow: none; min-height: 24px; }
+.v3d spinbutton:focus-within { border-color: %(accent)s; }
+.v3d spinbutton text, .v3d spinbutton entry text { color: %(text)s; }
+.v3d spinbutton entry { background-color: transparent; border: none; box-shadow: none; color: %(text)s; font-family: %(mono)s;
+                        font-size: 12px; padding: 1px 2px 1px 5px; min-height: 0; min-width: 0; }
+.v3d spinbutton button { background-color: transparent; border: none; color: %(muted)s; padding: 0; min-width: 13px; min-height: 0;
+                         -gtk-icon-transform: scale(0.62); }
+.v3d spinbutton button:hover { color: %(text)s; }
+.v3d scale { padding: 6px 0; }
+.v3d scale trough { background-color: %(line2)s; border: none; border-radius: 4px; min-height: 4px; }
+.v3d scale highlight { background-color: %(accent)s; border: none; border-radius: 4px; }
+.v3d scale.ax-x highlight { background-color: %(x)s; }
+.v3d scale.ax-y highlight { background-color: %(y)s; }
+.v3d scale.ax-z highlight { background-color: %(z)s; }
+.v3d scale slider { background-color: %(text)s; background-image: none; border: 2px solid %(panel)s; border-radius: 50%%;
+                    box-shadow: 0 0 0 1px %(line2)s; min-width: 14px; min-height: 14px; margin: -7px; }
+.v3d combobox button, .v3d combobox box.linked button { background-color: %(panel2)s; border: 1px solid %(line2)s; border-radius: 6px;
+                                                       min-height: 26px; padding: 0 6px; }
+.v3d combobox button label, .v3d combobox cellview { color: %(text)s; font-size: 12px; }
+.v3d switch { background-color: %(line2)s; background-image: none; border: none; border-radius: 10px; min-width: 30px; min-height: 17px;
+              font-size: 0; box-shadow: none; }
+.v3d switch:checked { background-color: %(accent)s; }
+.v3d switch slider { background-color: %(text)s; background-image: none; border: none; border-radius: 50%%; min-width: 13px;
+                     min-height: 13px; margin: 2px; box-shadow: none; }
+.v3d switch:checked slider { background-color: %(accent_ink)s; }
+.v3d switch image { color: transparent; }
+.v3d .toggle label { color: %(text2)s; font-size: 12.5px; }
+.v3d check { background-color: %(panel2)s; background-image: none; border: 1px solid %(line2)s; border-radius: 4px; color: %(accent_ink)s; }
+.v3d check:checked { background-color: %(accent)s; border-color: %(accent)s; }
+.v3d checkbutton label { color: %(text2)s; }
+.v3d scrollbar { background-color: transparent; border: none; }
+.v3d scrollbar slider { background-color: %(line2)s; min-width: 6px; border-radius: 3px; }
+.v3d .axis-x { color: %(x)s; } .v3d .axis-y { color: %(y)s; } .v3d .axis-z { color: %(z)s; }
+""" % dict(T, font=FONT, mono=MONO)).encode("utf-8")
+
 
 def rgb(hex_color, default=(0.6, 0.6, 0.6)):
     c = E.parse_color(hex_color)
@@ -66,6 +160,12 @@ def rgb(hex_color, default=(0.6, 0.6, 0.6)):
 
 def hexc(c):
     return "#%02x%02x%02x" % tuple(int(round(max(0.0, min(1.0, v)) * 255)) for v in c)
+
+
+def mix(a, b, p):
+    """CSS color-mix(in srgb, a p, b)."""
+    ca, cb = rgb(a), rgb(b)
+    return hexc(tuple(x * p + y * (1 - p) for x, y in zip(ca, cb)))
 
 
 def wrap180(a):
@@ -91,28 +191,45 @@ def svg_pixbuf(markup):
     return loader.get_pixbuf()
 
 
-# ---------------------------------------------------------------- orientation cube
+def svg_image(markup):
+    return Gtk.Image.new_from_pixbuf(svg_pixbuf(markup))
 
-def cube_faces(rx, ry, rz, s, colors):
+
+def icon_svg(name, color, size=20):
+    return ('<svg %s viewBox="0 0 24 24" width="%d" height="%d" fill="none" stroke="%s" stroke-width="1.7" stroke-linecap="round" '
+            'stroke-linejoin="round">%s</svg>' % (SVG_NS, size, size, color, ICONS[name].replace("currentColor", color)))
+
+
+# ---------------------------------------------------------------- drawings in the web app's style
+
+def cube_faces(rx, ry, rz, s):
     R = E.from_euler(rx, ry, rz)
+    cols = {"front": T["accent"], "back": T["tb_side"], "side": T["tb_side"], "top": T["tb_top"]}
     faces = [
-        ((0, 0, 1), [(-1, -1, 1), (1, -1, 1), (1, 1, 1), (-1, 1, 1)], colors["front"]),
-        ((0, 0, -1), [(1, -1, -1), (-1, -1, -1), (-1, 1, -1), (1, 1, -1)], colors["back"]),
-        ((1, 0, 0), [(1, -1, 1), (1, -1, -1), (1, 1, -1), (1, 1, 1)], colors["side"]),
-        ((-1, 0, 0), [(-1, -1, -1), (-1, -1, 1), (-1, 1, 1), (-1, 1, -1)], colors["side"]),
-        ((0, 1, 0), [(-1, 1, 1), (1, 1, 1), (1, 1, -1), (-1, 1, -1)], colors["top"]),
-        ((0, -1, 0), [(-1, -1, -1), (1, -1, -1), (1, -1, 1), (-1, -1, 1)], colors["top"]),
+        ((0, 0, 1), [(-1, -1, 1), (1, -1, 1), (1, 1, 1), (-1, 1, 1)], "front"),
+        ((0, 0, -1), [(1, -1, -1), (-1, -1, -1), (-1, 1, -1), (1, 1, -1)], "back"),
+        ((1, 0, 0), [(1, -1, 1), (1, -1, -1), (1, 1, -1), (1, 1, 1)], "side"),
+        ((-1, 0, 0), [(-1, -1, -1), (-1, -1, 1), (-1, 1, 1), (-1, 1, -1)], "side"),
+        ((0, 1, 0), [(-1, 1, 1), (1, 1, 1), (1, 1, -1), (-1, 1, -1)], "top"),
+        ((0, -1, 0), [(-1, -1, -1), (1, -1, -1), (1, -1, 1), (-1, -1, 1)], "top"),
     ]
     out = []
-    for n, verts, col in faces:
+    for n, verts, role in faces:
         nn = E.m_apply(R, list(n))
         if nn[2] <= 0.001:
             continue
         pts = [E.m_apply(R, [v[0] * s, v[1] * s, v[2] * s * 0.55]) for v in verts]
         k = 0.55 + 0.45 * nn[2]
-        out.append((nn[2], [(p[0], -p[1]) for p in pts], tuple(min(1.0, c * k) for c in col)))
+        out.append((nn[2], [(p[0], -p[1]) for p in pts], hexc(tuple(min(1.0, c * k) for c in rgb(cols[role])))))
     out.sort(key=lambda face: face[0])
     return out
+
+
+def cube_markup(rx, ry, rz, size):
+    c = size / 2.0
+    return "".join('<path d="M%sZ" fill="%s" stroke="%s" stroke-width="1" stroke-linejoin="round"/>'
+                   % ("L".join("%s %s" % (f(c + p[0]), f(c + p[1])) for p in pts), col, T["tb_edge"])
+                   for _, pts, col in cube_faces(rx, ry, rz, size * 0.3))
 
 
 def axes(rx, ry, rz):
@@ -125,40 +242,128 @@ def axes(rx, ry, rz):
     return res
 
 
-def trackball_svg(size, rx, ry, rz, front, focused):
+def trackball_svg(size, rx, ry, rz):
     c = size / 2.0
     r = size * 0.44
-    out = ['<svg %s width="%d" height="%d" viewBox="0 0 %d %d">' % (SVG_NS, size, size, size, size),
-           '<circle cx="%s" cy="%s" r="%s" fill="#1c1f26" stroke="%s" stroke-width="2"/>'
-           % (f(c), f(c), f(c - 3), "#f2a541" if focused else "#43474f"),
-           '<circle cx="%s" cy="%s" r="%s" fill="none" stroke="#ffffff" stroke-opacity="0.18" stroke-width="1.2" '
-           'stroke-dasharray="4 5"/>' % (f(c), f(c), f(c - 14))]
 
     def axis(a):
         z, name, x, y = a
-        op = "0.35" if z < 0 else "1"
-        col = AXIS_HEX[name]
-        return ('<line x1="%s" y1="%s" x2="%s" y2="%s" stroke="%s" stroke-opacity="%s" stroke-width="1.6"/>'
-                '<text x="%s" y="%s" fill="%s" fill-opacity="%s" font-family="sans-serif" font-weight="bold" '
-                'font-size="11" text-anchor="middle">%s</text>'
-                % (f(c), f(c), f(c + x * r), f(c + y * r), col, op, f(c + x * (r + 8)), f(c + y * (r + 8) + 4), col, op,
-                   name.upper()))
+        return ('<line x1="%s" y1="%s" x2="%s" y2="%s" stroke="%s" stroke-width="2" stroke-linecap="round" opacity="%s"/>'
+                '<text x="%s" y="%s" fill="%s" font-family="%s" font-weight="600" font-size="9" text-anchor="middle">%s</text>'
+                % (f(c), f(c), f(c + x * r), f(c + y * r), T[name], "0.35" if z < 0 else "1", f(c + x * (r + 7)),
+                   f(c + y * (r + 7) + 3), T[name], MONO.replace("'", ""), name.upper()))
 
     ax = axes(rx, ry, rz)
-    out.append(axis(ax[0]))
-    colors = {"front": front, "back": (0.45, 0.47, 0.52), "side": (0.5, 0.52, 0.57), "top": (0.62, 0.64, 0.69)}
-    for _, pts, col in cube_faces(rx, ry, rz, size * 0.3, colors):
-        out.append('<path d="M%sZ" fill="%s" stroke="#14161b" stroke-width="1.2" stroke-linejoin="round"/>'
-                   % ("L".join("%s %s" % (f(c + p[0]), f(c + p[1])) for p in pts), hexc(col)))
-    out.extend(axis(a) for a in ax[1:])
-    out.append("</svg>")
-    return "".join(out)
+    return ('<svg %s width="%d" height="%d" viewBox="0 0 %d %d"><defs><radialGradient id="bg" cx="0.4" cy="0.35" r="0.5">'
+            '<stop offset="0" stop-color="%s"/><stop offset="0.7" stop-color="%s"/><stop offset="1" stop-color="%s"/>'
+            '</radialGradient></defs><circle cx="%s" cy="%s" r="%s" fill="url(#bg)"/>'
+            '<circle cx="%s" cy="%s" r="%s" fill="none" stroke="%s" stroke-dasharray="3 4"/>%s%s%s</svg>'
+            % (SVG_NS, size, size, size, size, T["panel3"], T["panel2"], T["panel2"], f(c), f(c), f(c), f(c), f(c), f(c - 3),
+               T["line2"], axis(ax[0]), cube_markup(rx, ry, rz, size), "".join(axis(a) for a in ax[1:])))
 
+
+def light_sphere_pixbuf(size, az, el):
+    """The web app's light sphere: per-pixel Lambert plus a specular spot, and the sun marker."""
+    L = E.light_dir(az, el)
+    H = E.v_norm([L[0], L[1], L[2] + 1.0])
+    base = rgb(T["sphere"])
+    R = size / 2.0 - 2
+    data = bytearray(size * size * 4)
+    for y in range(size):
+        ny = -(y + 0.5 - size / 2.0) / R
+        for x in range(size):
+            nx = (x + 0.5 - size / 2.0) / R
+            d = nx * nx + ny * ny
+            if d > 1:
+                continue
+            nz = math.sqrt(1 - d)
+            lam = max(0.0, nx * L[0] + ny * L[1] + nz * L[2])
+            sp = math.pow(max(0.0, nx * H[0] + ny * H[1] + nz * H[2]), 40) * 0.8
+            k = 0.22 + 0.78 * lam
+            i = (y * size + x) * 4
+            data[i] = int(min(255, base[0] * 255 * k + 255 * sp))
+            data[i + 1] = int(min(255, base[1] * 255 * k + 255 * sp))
+            data[i + 2] = int(min(255, base[2] * 255 * k + 255 * sp))
+            data[i + 3] = 255 if d <= 0.985 else int(255 * (1 - (d - 0.985) / 0.015))
+    pb = GdkPixbuf.Pixbuf.new_from_bytes(GLib.Bytes.new(bytes(data)), GdkPixbuf.Colorspace.RGB, True, 8, size, size, size * 4)
+    px, py = size / 2.0 + L[0] * R, size / 2.0 - L[1] * R
+    behind = L[2] < 0
+    if behind:
+        n = math.hypot(L[0], L[1]) or 1.0
+        px, py = size / 2.0 + L[0] / n * R, size / 2.0 - L[1] / n * R
+    sun = svg_pixbuf('<svg %s width="%d" height="%d"><circle cx="%s" cy="%s" r="6.5" fill="%s" stroke="#3a2a05" '
+                     'stroke-width="1.5"/></svg>' % (SVG_NS, size, size, f(px), f(py),
+                                                      "rgba(255,214,102,0.45)" if behind else "#ffd666"))
+    sun.composite(pb, 0, 0, size, size, 0, 0, 1, 1, GdkPixbuf.InterpType.NEAREST, 255)
+    return pb
+
+
+def bevel_thumb(bevel, size=36):
+    fill = '<path d="%sH2Z" fill="%s" fill-opacity="0.14"/><path d="%s" fill="none" stroke="%s" stroke-width="2" stroke-linejoin="round"/>'
+    if bevel == "none" or bevel not in E.BEVELS:
+        body = ('<path d="M2 7H28V35H2Z" fill="%s" fill-opacity="0.14"/><path d="M2 7H28V35" fill="none" stroke="%s" '
+                'stroke-width="2" stroke-linejoin="round"/>' % (T["accent"], T["accent_text"]))
+    else:
+        pts = [(8 + 20 * (1 - o), 7 + 20 * z) for o, z in E.BEVELS[bevel](8)]
+        d = "M2 7H8" + "".join("L%s %s" % (f(x), f(y)) for x, y in pts) + "V35"
+        body = fill % (d, T["accent"], d, T["accent_text"])
+    return '<svg %s viewBox="0 0 36 36" width="%d" height="%d">%s</svg>' % (SVG_NS, size, size, body)
+
+
+def material_ball(mat, c, size=24):
+    """The web app's material swatches, drawn as SVG."""
+    r = size / 2.0
+    ink, deep = "#1b1c22", "#151530"
+    g = ""
+    extra = ""
+    if mat == "glossy":
+        g = ('<radialGradient id="m" cx="0.35" cy="0.3" r="0.8"><stop offset="0" stop-color="#ffffff"/><stop offset="0.28" '
+             'stop-color="%s"/><stop offset="1" stop-color="%s"/></radialGradient>' % (c, mix(c, "#000000", 0.45)))
+    elif mat == "clay":
+        g = ('<radialGradient id="m" cx="0.35" cy="0.3" r="0.8"><stop offset="0" stop-color="%s"/><stop offset="0.45" '
+             'stop-color="%s"/><stop offset="1" stop-color="%s"/></radialGradient>'
+             % (mix(c, "#ffffff", 0.6), c, mix(c, "#1a1a3a", 0.4)))
+    elif mat == "toon":
+        g = ('<linearGradient id="m" x1="0" y1="0" x2="1" y2="1"><stop offset="0.35" stop-color="%s"/><stop offset="0.35" '
+             'stop-color="%s"/><stop offset="0.7" stop-color="%s"/><stop offset="0.7" stop-color="%s"/></linearGradient>'
+             % (mix(c, "#ffffff", 0.55), c, c, mix(c, deep, 0.5)))
+        extra = '<circle cx="%s" cy="%s" r="%s" fill="none" stroke="%s" stroke-width="1.5"/>' % (r, r, r - 0.75, ink)
+    elif mat == "poster":
+        g = ('<linearGradient id="m" x1="0" y1="0" x2="1" y2="1"><stop offset="0.55" stop-color="%s"/><stop offset="0.55" '
+             'stop-color="%s"/></linearGradient>' % (c, mix(c, deep, 0.55)))
+    elif mat in ("chrome", "gold", "copper"):
+        g = ('<linearGradient id="m" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="%s"/><stop offset="0.4" stop-color="%s"/>'
+             '<stop offset="0.5" stop-color="%s"/><stop offset="0.54" stop-color="%s"/><stop offset="0.8" stop-color="%s"/>'
+             '<stop offset="1" stop-color="%s"/></linearGradient>'
+             % (mix(c, "#ffffff", 0.3), c, mix(c, "#000000", 0.25), mix(c, "#ffffff", 0.7), c, mix(c, "#000000", 0.4)))
+    elif mat == "lineart":
+        extra = '<circle cx="%s" cy="%s" r="%s" fill="none" stroke="%s" stroke-width="1.5"/>' % (r, r, r - 0.75, ink)
+    elif mat == "wire":
+        lines = "".join('<path d="M0 %sH%sM%s 0V%s" stroke="#2f6fed" stroke-width="1"/>' % (v, size, v, size)
+                        for v in (4.5, 9.5, 14.5, 19.5))
+        extra = ('<g clip-path="url(#clip)">%s</g><circle cx="%s" cy="%s" r="%s" fill="none" stroke="#2f6fed" stroke-width="1.5"/>'
+                 % (lines, r, r, r - 0.75))
+    paint = {"lineart": "#ffffff", "wire": "none", "flat": c}.get(mat, "url(#m)")
+    return ('<svg %s width="%d" height="%d" viewBox="0 0 %d %d"><defs>%s<clipPath id="clip"><circle cx="%s" cy="%s" r="%s"/>'
+            '</clipPath></defs><circle cx="%s" cy="%s" r="%s" fill="%s"/>%s</svg>'
+            % (SVG_NS, size, size, size, size, g, r, r, r, r, r, r, paint, extra))
+
+
+def chip_svg(color, size=20):
+    if not color:
+        return ('<svg %s width="%d" height="%d"><rect x="0.5" y="0.5" width="%d" height="%d" rx="5" fill="%s" stroke="%s" '
+                'stroke-dasharray="2 2"/></svg>' % (SVG_NS, size, size, size - 1, size - 1, T["panel3"], T["muted"]))
+    return ('<svg %s width="%d" height="%d"><rect width="%d" height="%d" rx="5" fill="%s"/><rect x="0.5" y="0.5" width="%d" '
+            'height="%d" rx="4.5" fill="none" stroke="#000000" stroke-opacity="0.25"/></svg>'
+            % (SVG_NS, size, size, size, size, color, size - 1, size - 1))
+
+
+# ---------------------------------------------------------------- custom widgets
 
 class Trackball(Gtk.EventBox):
     """Drag the cube to turn the objects. Shift locks one axis, Alt spins flat, arrow keys step 5°."""
 
-    SIZE = 176
+    SIZE = 132
 
     def __init__(self, win):
         super().__init__()
@@ -174,8 +379,6 @@ class Trackball(Gtk.EventBox):
         self.connect("motion-notify-event", lambda w, e: win.turn_to(e.x, e.y, e.state, 0.8))
         self.connect("button-release-event", lambda w, e: win.end_turn())
         self.connect("key-press-event", self.on_key)
-        self.connect("focus-in-event", lambda *_: self.redraw())
-        self.connect("focus-out-event", lambda *_: self.redraw())
         self._key = None
 
     def on_key(self, _w, e):
@@ -187,47 +390,16 @@ class Trackball(Gtk.EventBox):
 
     def redraw(self):
         st = self.win.state
-        key = (st["rx"], st["ry"], st["rz"], self.has_focus())
-        if key == self._key:
-            return False
-        self._key = key
-        self.image.set_from_pixbuf(svg_pixbuf(trackball_svg(self.SIZE, st["rx"], st["ry"], st["rz"],
-                                                            self.win.cube_color, self.has_focus())))
-        return False
-
-
-def kind_icon(kind, color):
-    return svg_pixbuf('<svg %s width="24" height="24" viewBox="0 0 24 24"><path d="%s" fill="none" stroke="%s" '
-                      'stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg>'
-                      % (SVG_NS, KIND_ICONS[kind], color))
-
-
-# ---------------------------------------------------------------- light sphere
-
-def light_sphere_svg(size, az, el):
-    L = E.light_dir(az, el)
-    c = size / 2.0
-    R = c - 3
-    hx, hy = c + L[0] * R * 0.55, c - L[1] * R * 0.55
-    first = "#fbfbfc" if L[2] >= 0 else "#8d929c"
-    px, py = c + L[0] * R, c - L[1] * R
-    behind = L[2] < 0
-    if behind:
-        n = math.hypot(L[0], L[1]) or 1.0
-        px, py = c + L[0] / n * R, c - L[1] / n * R
-    return ('<svg %s width="%d" height="%d" viewBox="0 0 %d %d"><defs><radialGradient id="g" gradientUnits="userSpaceOnUse" '
-            'cx="%s" cy="%s" fx="%s" fy="%s" r="%s"><stop offset="0" stop-color="%s"/><stop offset="0.3" stop-color="#b3b8c2"/>'
-            '<stop offset="1" stop-color="#262930"/></radialGradient></defs>'
-            '<circle cx="%s" cy="%s" r="%s" fill="url(#g)" stroke="#43474f" stroke-width="1.5"/>'
-            '<circle cx="%s" cy="%s" r="6.5" fill="#ffd666" fill-opacity="%s" stroke="#3a2a05" stroke-width="1.5"/></svg>'
-            % (SVG_NS, size, size, size, size, f(hx), f(hy), f(hx), f(hy), f(R * 1.25), first, f(c), f(c), f(R),
-               f(px), f(py), "0.45" if behind else "1"))
+        key = (st["rx"], st["ry"], st["rz"])
+        if key != self._key:
+            self._key = key
+            self.image.set_from_pixbuf(svg_pixbuf(trackball_svg(self.SIZE, *key)))
 
 
 class LightSphere(Gtk.EventBox):
     """Drag the sun to aim the light. Past the rim, the light moves behind the object."""
 
-    SIZE = 124
+    SIZE = 112
 
     def __init__(self, win):
         super().__init__()
@@ -237,7 +409,7 @@ class LightSphere(Gtk.EventBox):
         self.set_size_request(self.SIZE, self.SIZE)
         self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.BUTTON_RELEASE_MASK |
                         Gdk.EventMask.POINTER_MOTION_MASK)
-        self.set_tooltip_text("Drag to aim the light")
+        self.set_tooltip_text("Drag the sun to aim the light")
         self.dragging = False
         self.connect("button-press-event", self.on_press)
         self.connect("motion-notify-event", lambda w, e: self.dragging and self.aim(e.x, e.y))
@@ -255,7 +427,7 @@ class LightSphere(Gtk.EventBox):
 
     def aim(self, x, y):
         c = self.SIZE / 2.0
-        R = c - 3
+        R = c - 2
         nx, ny = (x - c) / R, -(y - c) / R
         d = math.hypot(nx, ny)
         if d <= 1:
@@ -275,75 +447,26 @@ class LightSphere(Gtk.EventBox):
         key = (st["light_az"], st["light_el"])
         if key != self._key:
             self._key = key
-            self.image.set_from_pixbuf(svg_pixbuf(light_sphere_svg(self.SIZE, *key)))
+            self.image.set_from_pixbuf(light_sphere_pixbuf(self.SIZE, *key))
 
 
-def preset_icon(rx, ry, rz, front):
-    size = 40
-    c = size / 2.0
-    colors = {"front": front, "back": (0.45, 0.47, 0.52), "side": (0.5, 0.52, 0.57), "top": (0.62, 0.64, 0.69)}
-    out = ['<svg %s width="%d" height="%d" viewBox="0 0 %d %d">' % (SVG_NS, size, size, size, size)]
-    for _, pts, col in cube_faces(rx, ry, rz, size * 0.3, colors):
-        out.append('<path d="M%sZ" fill="%s" stroke="#14161b" stroke-width="1" stroke-linejoin="round"/>'
-                   % ("L".join("%s %s" % (f(c + p[0]), f(c + p[1])) for p in pts), hexc(col)))
-    out.append("</svg>")
-    return svg_pixbuf("".join(out))
+# ---------------------------------------------------------------- choices (labels as in the web app)
 
-
-# ---------------------------------------------------------------- settings layout
-
-BEVELS = [("none", "None"), ("classic", "Classic"), ("round", "Round"), ("cove", "Cove"), ("ogee", "Ogee"),
-          ("step", "Step"), ("chisel", "Chisel")]
-SHAPE_ROWS = {
-    "extrude": [("slider", "depth", "Depth", 0, 400, "px"), ("check", "caps", "Solid (end caps)"),
-                ("combo", "bevel", "Bevel", BEVELS), ("slider", "bevel_w", "Bevel width", 0, 60, "px"),
-                ("slider", "bevel_h", "Bevel height", 0, 60, "px"),
-                ("combo", "bevel_sides", "Bevel on", [("front", "Front"), ("both", "Front and back")]),
-                ("check", "bevel_out", "Grow the bevel outward"), ("slider", "bevel_segs", "Bevel smoothness", 1, 12, "")],
-    "revolve": [("label", "Spins the shape around a vertical axis, like a lathe. Draw half a profile with its straight side "
-                          "on the axis."),
-                ("combo", "rev_axis", "Axis", [("left", "Left edge"), ("center", "Center"), ("right", "Right edge")]),
-                ("slider", "rev_angle", "Angle", 1, 360, "°"), ("slider", "rev_offset", "Offset from axis", 0, 400, "px"),
-                ("slider", "rev_segs", "Segments", 6, 128, ""), ("check", "rev_caps", "Cap the cut ends")],
-    "inflate": [("slider", "inf_height", "Puffiness", 0, 400, "px"),
-                ("combo", "inf_profile", "Profile", [("round", "Round"), ("pillow", "Pillow"), ("dome", "Dome"),
-                                                     ("soft", "Soft"), ("cone", "Sharp")]),
-                ("slider", "inf_spread", "Roundness", 5, 100, "%"),
-                ("combo", "inf_sides", "Sides", [("both", "Both sides"), ("front", "Front only")]),
-                ("slider", "inf_detail", "Detail", 12, 120, "")],
-    "flat": [("label", "Keeps the artwork paper-thin and tilts it in space: lay art on a floor, a wall or the side of an "
-                       "isometric box.")],
-}
-MATERIAL_NAMES = [("glossy", "Glossy"), ("clay", "Clay"), ("toon", "Toon"), ("poster", "Poster"), ("chrome", "Chrome"),
-                  ("gold", "Gold"), ("copper", "Copper"), ("lineart", "Line art"), ("wire", "Wireframe"), ("flat", "Flat")]
+KINDS = [("flat", "Flat"), ("extrude", "Extrude"), ("revolve", "Revolve"), ("inflate", "Inflate")]
+TABS = [("view", "View", "orbit"), ("shape", "Shape", "cube"), ("surface", "Surface", "sparkle"), ("colors", "Colors", "palette"),
+        ("light", "Light", "light"), ("outline", "Outline", "shadow"), ("style", "Style", "sliders")]
 PRESET_NAMES = [("front", "Front"), ("offaxis", "Off-axis"), ("offaxis-l", "Off-axis left"), ("hero", "Low angle"),
                 ("iso-l", "Isometric left"), ("iso-r", "Isometric right"), ("iso-t", "Isometric top"), ("top", "Top down"),
                 ("turn-l", "Turned left"), ("turn-r", "Turned right"), ("tilt", "Tilted back"), ("dimetric", "Dimetric")]
-SURFACE_ROWS = [("combo", "shading", "Shading", [("plastic", "Glossy"), ("matte", "Matte"), ("toon", "Toon"),
-                                                 ("metal", "Metal"), ("flat", "Flat"), ("lineart", "Line art"),
-                                                 ("wire", "Wireframe")]),
-                ("check", "smooth", "Smooth gradients on curved surfaces"),
-                ("slider", "steps", "Color bands", 0, 10, ""), ("slider", "smooth_angle", "Smoothing angle", 0, 90, "°")]
-COLOR_ROWS = [("color", "fill", "Front"), ("optcolor", "side_color", "Sides"), ("optcolor", "bevel_color", "Bevel"),
-              ("optcolor", "back_color", "Back"), ("color", "highlight", "Highlight"),
-              ("combo", "shadow_tint", "Shadow tone", [("auto", "Tinted"), ("black", "Black")])]
-LIGHT_ROWS = [("slider", "light_az", "Direction", -180, 180, "°"), ("slider", "light_el", "Height", -89, 89, "°"),
-              ("slider", "light_intensity", "Intensity", 0, 200, "%"), ("slider", "light_ambient", "Ambient", 0, 100, "%"),
-              ("slider", "light_fill", "Fill light", 0, 100, "%"), ("slider", "light_specular", "Highlight", 0, 150, "%"),
-              ("slider", "light_gloss", "Gloss", 0, 100, "")]
-OUTLINE_ROWS = [("combo", "edges", "Edge lines", [("none", "None"), ("outline", "Outline and sharp edges"),
-                                                  ("all", "Every facet")]),
-                ("color", "edge_color", "Line color"), ("slider", "edge_width", "Line width", 0.1, 20, "px"),
-                ("slider", "crease_angle", "Crease angle", 5, 120, "°"),
-                ("combo", "shadow", "Shadow", [("none", "None"), ("drop", "Cast onto the page"), ("floor", "Soft floor shadow")]),
-                ("slider", "shadow_opacity", "Shadow opacity", 0, 100, "%"),
-                ("slider", "shadow_blur", "Shadow softness", 0, 100, "px"),
-                ("slider", "shadow_dist", "Shadow distance", 0, 1000, "px"), ("color", "shadow_color", "Shadow color"),
-                ("slider", "seam", "Seam fix", 0, 3, "px")]
-STYLE_ROWS = [("color", "fill", "Fill"), ("outline", "edges", "Outline"), ("color", "edge_color", "Outline color"),
-              ("slider", "edge_width", "Outline width", 0.1, 20, "px"), ("slider", "opacity", "Opacity", 0, 100, "%")]
-ROTATION_KEYS = ("rx", "ry", "rz", "persp")
-FINE = {"bevel_w", "bevel_h", "edge_width", "seam", "shadow_blur"}
+MATERIALS = [("glossy", "Glossy", None), ("clay", "Clay", None), ("toon", "Toon", None), ("poster", "Poster", None),
+             ("chrome", "Chrome", "#c3cad6"), ("gold", "Gold", "#e2b44a"), ("copper", "Copper", "#d27b52"),
+             ("lineart", "Line art", None), ("wire", "Wireframe", None), ("flat", "Flat color", None)]
+BEVEL_NAMES = [("none", "None"), ("classic", "Classic"), ("round", "Round"), ("cove", "Cove"), ("ogee", "Ogee"),
+               ("step", "Step"), ("chisel", "Chisel")]
+SHADINGS = [("plastic", "Glossy"), ("matte", "Matte"), ("toon", "Toon"), ("metal", "Metal"), ("flat", "Flat"),
+            ("lineart", "Line art"), ("wire", "Wireframe")]
+PROFILES = [("round", "Round"), ("pillow", "Pillow"), ("dome", "Dome"), ("soft", "Soft"), ("cone", "Sharp")]
+PLAIN_SHADINGS = ("flat", "lineart", "wire")
 
 
 def to_rgba(hex_color):
@@ -353,12 +476,30 @@ def to_rgba(hex_color):
     return c
 
 
+def label(text, cls=None, xalign=0.0, wrap=False, width=None):
+    lab = Gtk.Label(label=text, xalign=xalign)
+    if cls:
+        for c in cls.split():
+            lab.get_style_context().add_class(c)
+    if wrap:
+        lab.set_line_wrap(True)
+        lab.set_max_width_chars(width or 40)
+    return lab
+
+
+def styled(widget, *classes):
+    for c in classes:
+        widget.get_style_context().add_class(c)
+    return widget
+
+
 # ---------------------------------------------------------------- the window
 
 class EditorWindow(Gtk.Window):
     def __init__(self, init, render_cb, context, pages, cube_color, count):
         super().__init__(title="Vector 3Dit · 3D Editor")
         self.state = dict(init)
+        self.state.setdefault("shared_light", True)
         self.touched = set()
         self.render_cb = render_cb
         self.context = context
@@ -375,17 +516,22 @@ class EditorWindow(Gtk.Window):
         self._context_cache = None
         self._redraw_id = None
         self._size = (0, 0)
-        self.bind = {}  # key -> [setter(value)] that update widgets without feedback
-        self.sections = {}
+        self.bind = {}    # key -> [setter(value)] that update widgets without feedback
+        self.rules = []   # (widget, predicate(state)) for controls that only apply sometimes
+        self.icons = []   # (image, icon name, button) repainted when a toggle changes state
         for item in self.context:
             item["d"] = "".join("M" + "L".join("%s %s" % (f(x), f(y)) for x, y in pts) + ("Z" if closed else "")
                                 for pts, closed in item["subs"] if len(pts) > 1)
 
+        settings = Gtk.Settings.get_default()
+        if settings is not None:
+            settings.set_property("gtk-application-prefer-dark-theme", True)
         provider = Gtk.CssProvider()
         provider.load_from_data(CSS)
-        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_USER)
+        styled(self, "v3d")
 
-        width, height = 1240, 820
+        width, height = 1180, 780
         try:  # fit smaller laptop screens
             display = Gdk.Display.get_default()
             monitor = display.get_primary_monitor() or display.get_monitor(0)
@@ -408,23 +554,210 @@ class EditorWindow(Gtk.Window):
         self.sync_all()
         self.render(draft=False)
 
-    # ---- building
+    # ---- building blocks
+    def icon_button(self, button, name, text, size, box_orientation=Gtk.Orientation.VERTICAL):
+        box = Gtk.Box(orientation=box_orientation, spacing=2 if box_orientation == Gtk.Orientation.VERTICAL else 6)
+        img = Gtk.Image()
+        img.set_halign(Gtk.Align.CENTER)
+        box.pack_start(img, False, False, 0)
+        box.pack_start(label(text, xalign=0.5), False, False, 0)
+        box.set_halign(Gtk.Align.CENTER)
+        button.add(box)
+        self.icons.append((img, name, button, size))
+        return button
+
+    def paint_icons(self):
+        for img, name, button, size in self.icons:
+            ctx = button.get_style_context()
+            if ctx.has_class("tab"):
+                color = T["accent_text"] if button.get_active() else T["muted"]
+            elif isinstance(button, Gtk.ToggleButton):
+                color = T["accent_ink"] if button.get_active() else T["text2"]
+            else:
+                color = T["text"]
+            img.set_from_pixbuf(svg_pixbuf(icon_svg(name, color, size)))
+
+    def page(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=9)
+        return styled(box, "page")
+
+    def row(self, text, widget):
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        lab = label(text)
+        lab.set_size_request(84, -1)
+        lab.set_ellipsize(3)
+        box.pack_start(lab, False, False, 0)
+        widget.set_hexpand(True)
+        box.pack_start(widget, True, True, 0)
+        return box
+
+    def slider(self, key, text, lo, hi, step=1.0, unit="", axis=None, tip=None):
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        lab = label(text)
+        lab.set_size_request(84, -1)
+        if axis:
+            lab.set_markup('<span foreground="%s">%s</span>' % (T[axis], text))
+        box.pack_start(lab, False, False, 0)
+        value = float(self.state.get(key, lo) or 0)
+        digits = 0 if step >= 1 else 1
+        adj = Gtk.Adjustment(value=value, lower=min(lo, value), upper=max(hi, value), step_increment=step,
+                             page_increment=step * 10)
+        scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=adj)
+        scale.set_draw_value(False)
+        scale.set_hexpand(True)
+        if axis:
+            styled(scale, "ax-" + axis)
+        spin = Gtk.SpinButton(adjustment=adj, climb_rate=1, digits=digits)
+        spin.set_width_chars(4)
+        spin.set_numeric(True)
+        box.pack_start(scale, True, True, 0)
+        box.pack_start(spin, False, False, 0)
+        u = label(unit)
+        u.set_size_request(14, -1)
+        box.pack_start(u, False, False, 0)
+        adj.connect("value-changed", lambda a: self.on_widget(key, a.get_value()))
+        self.bind.setdefault(key, []).append(lambda v: v is not None and adj.set_value(float(v)))
+        if tip:
+            box.set_tooltip_text(tip)
+        return box
+
+    def toggle(self, key, text, tip=None, getter=None, setter=None):
+        box = styled(Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=9), "toggle")
+        sw = Gtk.Switch()
+        sw.set_valign(Gtk.Align.CENTER)
+        box.pack_start(sw, False, False, 0)
+        box.pack_start(label(text), False, False, 0)
+        get = getter or (lambda v: bool(v))
+        sw.connect("notify::active", lambda s, _p: self.on_widget(key, setter(s.get_active()) if setter else s.get_active()))
+        self.bind.setdefault(key, []).append(lambda v: sw.set_active(get(v)))
+        if tip:
+            box.set_tooltip_text(tip)
+        return box
+
+    def seg(self, key, options, cls=None, icons=False):
+        box = styled(Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2, homogeneous=True), "seg")
+        if cls:
+            styled(box, cls)
+        buttons = {}
+        for value, text, *rest in options:
+            b = Gtk.ToggleButton()
+            if icons:
+                self.icon_button(b, rest[0], text, 20)
+            else:
+                b.add(label(text, xalign=0.5))
+            if rest and not icons and rest[0]:
+                b.set_tooltip_text(rest[0])
+            b.connect("toggled", self.on_seg, key, value, buttons)
+            box.pack_start(b, True, True, 0)
+            buttons[value] = b
+
+        def set_value(v):
+            for val, b in buttons.items():
+                b.set_active(val == v)
+
+        self.bind.setdefault(key, []).append(set_value)
+        return box
+
+    def on_seg(self, button, key, value, buttons):
+        if self._syncing:
+            return
+        if not button.get_active():  # keep one pressed
+            if self.state.get(key) == value:
+                self._syncing = True
+                button.set_active(True)
+                self._syncing = False
+            return
+        self.on_widget(key, value)
+
+    def select(self, key, options):
+        combo = Gtk.ComboBoxText()
+        for value, text in options:
+            combo.append(value, text)
+        combo.connect("changed", lambda c: c.get_active_id() and self.on_widget(key, c.get_active_id()))
+        self.bind.setdefault(key, []).append(lambda v: combo.set_active_id(str(v)))
+        return combo
+
+    def color(self, key, text, auto=False, fallback="fill", tip=None):
+        btn = styled(Gtk.Button(), "swatch")
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        chip = Gtk.Image()
+        txt = label("", xalign=0)
+        box.pack_start(chip, False, False, 0)
+        box.pack_start(txt, True, True, 0)
+        btn.add(box)
+        btn.set_hexpand(True)
+        if tip:
+            btn.set_tooltip_text(tip)
+
+        def show(v):
+            if v:
+                chip.set_from_pixbuf(svg_pixbuf(chip_svg(v)))
+                txt.set_text(v.upper())
+            else:
+                chip.set_from_pixbuf(svg_pixbuf(chip_svg(self.state.get(fallback) or self.state.get("fill") or "#888888")))
+                txt.set_text("Auto")
+
+        def pick(_b):
+            dlg = Gtk.ColorChooserDialog(title=text, transient_for=self)
+            dlg.set_use_alpha(False)
+            dlg.set_rgba(to_rgba(self.state.get(key) or self.state.get(fallback) or "#888888"))
+            if dlg.run() == Gtk.ResponseType.OK:
+                c = dlg.get_rgba()
+                self.on_widget(key, hexc((c.red, c.green, c.blue)))
+            dlg.destroy()
+
+        btn.connect("clicked", pick)
+        self.bind.setdefault(key, []).append(show)
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        row.pack_start(btn, True, True, 0)
+        if auto:
+            reset = styled(Gtk.Button(label="Auto"), "btn", "small", "ghost")
+            reset.set_tooltip_text("Use the automatic color")
+            reset.connect("clicked", lambda _b: self.on_widget(key, None))
+            row.pack_start(reset, False, False, 0)
+            self.rules.append((reset, lambda s, k=key: bool(s.get(k))))
+        return self.row(text, row)
+
+    def tip(self, text):
+        box = styled(Gtk.Box(), "tip")
+        box.pack_start(label(text, wrap=True, width=46), True, True, 0)
+        return box
+
+    def sub(self, text):
+        return label(text.upper(), "sub-label")
+
+    def tiles(self, items, per_line, on_click):
+        grid = Gtk.Grid(column_spacing=4, row_spacing=4, column_homogeneous=True)
+        for i, (key, text, image) in enumerate(items):
+            b = styled(Gtk.Button(), "tile")
+            b.set_tooltip_text(text)
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+            box.pack_start(image, False, False, 0)
+            box.pack_start(label(text, xalign=0.5), False, False, 0)
+            b.add(box)
+            b.connect("clicked", lambda _b, k=key: on_click(k))
+            grid.attach(b, i % per_line, i // per_line, 1, 1)
+        return grid
+
+    def when(self, widget, predicate):
+        self.rules.append((widget, predicate))
+        return widget
+
+    # ---- layout
     def build_preview(self, count):
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        bar.get_style_context().add_class("v3d-toolbar")
-        self.status = Gtk.Label(xalign=0)
-        self.status.get_style_context().add_class("v3d-status")
-        self.status.set_text("%d object%s · drag to turn · right-drag to pan · scroll to zoom" % (count, "" if count == 1 else "s"))
+        bar = styled(Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8), "preview-bar")
+        self.status = label("%d object%s · drag to turn · right-drag to pan · scroll to zoom"
+                            % (count, "" if count == 1 else "s"), "muted")
         self.status.set_ellipsize(3)
         bar.pack_start(self.status, True, True, 0)
         self.show_ctx = Gtk.CheckButton(label="Other objects")
         self.show_ctx.set_active(True)
         self.show_ctx.set_tooltip_text("Show the rest of the drawing, faded, to help with placement")
         self.show_ctx.connect("toggled", lambda *_: self.queue_preview())
-        bar.pack_start(self.show_ctx, False, False, 6)
-        for label, what in (("Fit selection", "sel"), ("Fit page", "page")):
-            b = Gtk.Button(label=label)
+        bar.pack_start(self.show_ctx, False, False, 4)
+        for text, what in (("Fit selection", "sel"), ("Fit page", "page")):
+            b = styled(Gtk.Button(label=text), "btn", "small")
             b.connect("clicked", lambda _b, w=what: self.fit(w))
             bar.pack_start(b, False, False, 0)
         left.pack_start(bar, False, False, 0)
@@ -447,289 +780,350 @@ class EditorWindow(Gtk.Window):
         return left
 
     def build_panel(self):
-        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        panel.get_style_context().add_class("v3d-panel")
-        panel.set_size_request(430, -1)
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        panel.set_size_request(372, -1)
+        panel.set_hexpand(False)  # stretchy sliders inside must not make the panel take the preview's space
 
-        kinds = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, homogeneous=True)
-        kinds.get_style_context().add_class("linked")
-        kinds.get_style_context().add_class("v3d-kind")
-        self.kind_buttons, self.kind_icons = {}, {}
-        self.icon_color = "#555a66"
-        for kind, label in KINDS:
-            b = Gtk.ToggleButton()
-            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-            icon = Gtk.Image.new_from_pixbuf(kind_icon(kind, self.icon_color))
-            icon.set_halign(Gtk.Align.CENTER)
-            box.pack_start(icon, False, False, 0)
-            box.pack_start(Gtk.Label(label=label), False, False, 0)
-            b.add(box)
-            b.connect("toggled", self.on_kind, kind)
-            kinds.pack_start(b, True, True, 0)
-            self.kind_buttons[kind] = b
-            self.kind_icons[kind] = icon
-        panel.pack_start(kinds, False, False, 0)
+        head = styled(Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10), "panel-head")
+        head.pack_start(self.seg("kind", [(k, t, k) for k, t in KINDS], "kinds", icons=True), False, False, 0)
+        panel.pack_start(head, False, False, 0)
 
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        sections = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        sections.get_style_context().add_class("v3d-sections")
-        scroll.add(sections)
-        panel.pack_start(scroll, True, True, 0)
+        tabs = styled(Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2, homogeneous=True), "tabs")
+        self.stack = Gtk.Stack()
+        self.stack.set_transition_type(Gtk.StackTransitionType.NONE)
+        self.tab_buttons = {}
+        builders = {"view": self.build_view, "shape": self.build_shape, "surface": self.build_surface,
+                    "colors": self.build_colors, "light": self.build_light, "outline": self.build_outline,
+                    "style": self.build_style}
+        for key, text, icon in TABS:
+            b = styled(Gtk.ToggleButton(), "tab")
+            self.icon_button(b, icon, text, 19)
+            b.connect("toggled", self.on_tab, key)
+            tabs.pack_start(b, True, True, 0)
+            self.tab_buttons[key] = b
+            scroll = Gtk.ScrolledWindow()
+            scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            scroll.add(builders[key]())
+            self.stack.add_named(scroll, key)
+        panel.pack_start(tabs, False, False, 0)
+        panel.pack_start(self.stack, True, True, 0)
 
-        sections.pack_start(self.section("View & rotation", self.build_view(), True), False, False, 0)
-        self.shape_stack = Gtk.Stack()
-        self.shape_stack.set_vhomogeneous(False)
-        self.shape_stack.set_transition_type(Gtk.StackTransitionType.NONE)
-        for kind, rows in SHAPE_ROWS.items():
-            self.shape_stack.add_named(self.grid(rows), kind)
-        sections.pack_start(self.section("Shape", self.shape_stack, True), False, False, 0)
-        surface = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        surface.pack_start(self.sublabel("Material presets"), False, False, 0)
-        surface.pack_start(self.chips([(k, l, None) for k, l in MATERIAL_NAMES], self.apply_material, 5), False, False, 0)
-        surface.pack_start(self.grid(SURFACE_ROWS), False, False, 0)
-        sections.pack_start(self.section("Surface & material", surface, False), False, False, 0)
-        sections.pack_start(self.section("Colors", self.grid(COLOR_ROWS), False), False, False, 0)
-        light = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        self.light_sphere = LightSphere(self)
-        self.light_sphere.set_halign(Gtk.Align.CENTER)
-        light.pack_start(self.light_sphere, False, False, 0)
-        light.pack_start(self.grid(LIGHT_ROWS), False, False, 0)
-        sections.pack_start(self.section("Light", light, False), False, False, 0)
-        sections.pack_start(self.section("Outlines & shadow", self.grid(OUTLINE_ROWS), False), False, False, 0)
-        sections.pack_start(self.section("Style", self.grid(STYLE_ROWS), True), False, False, 0)
-
-        note = Gtk.Label(xalign=0)
-        note.set_markup("<small>Changes apply to every selected object. Settings you don't touch stay as each object "
-                        "has them.</small>")
-        note.set_line_wrap(True)
-        note.set_max_width_chars(44)
-        note.get_style_context().add_class("v3d-hint")
-        panel.pack_start(note, False, False, 0)
-        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        cancel = Gtk.Button(label="Cancel")
+        foot = styled(Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8), "footer")
+        note = label("Changes apply to every selected object.", "muted", wrap=True, width=24)
+        foot.pack_start(note, True, True, 0)
+        cancel = styled(Gtk.Button(label="Cancel"), "btn")
         cancel.connect("clicked", lambda *_: self.finish(False))
-        apply_btn = Gtk.Button(label="Apply")
-        apply_btn.get_style_context().add_class("suggested-action")
+        apply_btn = styled(Gtk.Button(label="Apply"), "btn", "primary")
         apply_btn.connect("clicked", lambda *_: self.finish(True))
-        buttons.pack_end(apply_btn, False, False, 0)
-        buttons.pack_end(cancel, False, False, 0)
-        panel.pack_start(buttons, False, False, 0)
+        foot.pack_start(cancel, False, False, 0)
+        foot.pack_start(apply_btn, False, False, 0)
+        panel.pack_start(foot, False, False, 0)
+        self._syncing = True
+        self.tab_buttons["view"].set_active(True)
+        self._syncing = False
         return panel
 
+    def on_tab(self, button, key):
+        if self._syncing:
+            return
+        if not button.get_active():
+            if self.stack.get_visible_child_name() == key:
+                self._syncing = True
+                button.set_active(True)
+                self._syncing = False
+            return
+        self.show_tab(key)
+
+    def show_tab(self, key):
+        self._syncing = True
+        for k, b in self.tab_buttons.items():
+            b.set_active(k == key)
+        self._syncing = False
+        self.stack.set_visible_child_name(key)
+        self.paint_icons()
+
     def build_view(self):
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        page = self.page()
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self.trackball = Trackball(self)
         row.pack_start(self.trackball, False, False, 0)
-        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        hint = Gtk.Label(label="Drag the cube, or the preview, to turn the objects. Shift locks one axis, Alt spins it flat.",
-                         xalign=0)
-        hint.set_line_wrap(True)
-        hint.set_max_width_chars(20)
-        hint.get_style_context().add_class("v3d-hint")
-        side.pack_start(hint, False, False, 0)
-        face = Gtk.Button(label="↺  Face front")
+        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        side.pack_start(label("Drag the cube to turn the object. Shift locks one axis, Alt spins it flat.", "muted",
+                              wrap=True, width=22), False, False, 0)
+        face = styled(Gtk.Button(), "btn", "small")
+        self.icon_button(face, "rotCCW", "Face front", 16, Gtk.Orientation.HORIZONTAL)
+        face.set_tooltip_text("Reset rotation")
         face.connect("clicked", lambda *_: self.set_rotation(0, 0, 0))
+        face.set_halign(Gtk.Align.START)
         side.pack_start(face, False, False, 0)
         side.set_valign(Gtk.Align.CENTER)
         row.pack_start(side, True, True, 0)
-        box.pack_start(row, False, False, 0)
-        box.pack_start(self.grid([("slider", "rx", "Tilt", -180, 180, "°", "x"), ("slider", "ry", "Turn", -180, 180, "°", "y"),
-                                  ("slider", "rz", "Spin", -180, 180, "°", "z"),
-                                  ("slider", "persp", "Perspective", 0, 160, "°", "p")]), False, False, 0)
-        box.pack_start(self.sublabel("Preset views"), False, False, 0)
-        chips = [(k, l, preset_icon(*E.PRESETS[k], self.cube_color)) for k, l in PRESET_NAMES]
-        flow = self.chips(chips, lambda k: self.set_rotation(*E.PRESETS[k]), 6)
-        self.preset_images = [(k, child.get_child().get_child()) for (k, _l, _p), child in zip(chips, flow.get_children())]
-        box.pack_start(flow, False, False, 0)
-        return box
+        page.pack_start(row, False, False, 0)
+        page.pack_start(self.slider("rx", "Tilt", -180, 180, 1, "°", "x", "Rotate around the horizontal axis (X)"), False, False, 0)
+        page.pack_start(self.slider("ry", "Turn", -180, 180, 1, "°", "y", "Rotate around the vertical axis (Y)"), False, False, 0)
+        page.pack_start(self.slider("rz", "Spin", -180, 180, 1, "°", "z", "Rotate within the drawing plane (Z)"), False, False, 0)
+        page.pack_start(self.slider("persp", "Perspective", 0, 160, 1, "°",
+                                    tip="Camera field of view. 0 = no perspective (parallel lines stay parallel)."), False, False, 0)
+        page.pack_start(self.sub("Preset views"), False, False, 0)
+        items = [(k, t, svg_image('<svg %s width="30" height="30" viewBox="0 0 30 30">%s</svg>'
+                                  % (SVG_NS, cube_markup(*E.PRESETS[k], 30)))) for k, t in PRESET_NAMES]
+        page.pack_start(self.tiles(items, 4, lambda k: self.set_rotation(*E.PRESETS[k])), False, False, 0)
+        return page
 
-    def section(self, title, child, expanded):
-        exp = Gtk.Expander()
-        lab = Gtk.Label(label=title.upper(), xalign=0)
-        lab.get_style_context().add_class("v3d-head")
-        exp.set_label_widget(lab)
-        exp.set_expanded(expanded)
-        child.set_margin_top(8)
-        child.set_margin_bottom(10)
-        child.set_margin_start(4)
-        exp.add(child)
-        exp.get_style_context().add_class("v3d-section")
-        self.sections[title.upper()] = exp
-        return exp
+    def build_shape(self):
+        page = self.page()
+        self.shape_stack = Gtk.Stack()
+        self.shape_stack.set_vhomogeneous(False)
+        self.shape_stack.set_transition_type(Gtk.StackTransitionType.NONE)
+        has_bevel = lambda s: s.get("bevel", "none") != "none"  # noqa: E731
 
-    @staticmethod
-    def sublabel(text):
-        lab = Gtk.Label(label=text, xalign=0)
-        lab.get_style_context().add_class("v3d-sub")
-        return lab
+        ex = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=9)
+        ex.pack_start(self.slider("depth", "Depth", 0, 400, 1, "px"), False, False, 0)
+        ex.pack_start(self.toggle("caps", "Solid (end caps)", "Turn off for a hollow tube"), False, False, 0)
+        ex.pack_start(self.row("Bevel", self.bevel_picker()), False, False, 0)
+        for w in (self.slider("bevel_w", "Bevel width", 0, 60, 0.5, "px"), self.slider("bevel_h", "Bevel height", 0, 60, 0.5, "px"),
+                  self.row("Bevel on", self.seg("bevel_sides", [("front", "Front"), ("both", "Front & back")])),
+                  self.row("Direction", self.seg("bevel_out", [(False, "Inward", "Carve the bevel into the shape"),
+                                                               (True, "Outward", "Grow the bevel outside the shape")])),
+                  self.slider("bevel_segs", "Smoothness", 1, 12, 1)):
+            ex.pack_start(self.when(w, has_bevel), False, False, 0)
+        self.shape_stack.add_named(ex, "extrude")
 
-    def chips(self, items, on_click, per_line):
-        flow = Gtk.FlowBox()
-        flow.set_selection_mode(Gtk.SelectionMode.NONE)
-        flow.set_max_children_per_line(per_line)
-        flow.set_min_children_per_line(min(per_line, 4))
-        flow.set_homogeneous(True)
-        flow.set_column_spacing(4)
-        flow.set_row_spacing(4)
-        for key, label, pixbuf in items:
-            b = Gtk.Button()
-            b.get_style_context().add_class("v3d-chip")
-            b.set_tooltip_text(label)
-            if pixbuf is not None:
-                b.add(Gtk.Image.new_from_pixbuf(pixbuf))
-            else:
-                b.set_label(label)
-            b.connect("clicked", lambda _b, k=key: on_click(k))
-            flow.add(b)
-        return flow
+        rv = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=9)
+        rv.pack_start(self.tip("The shape spins around a vertical axis. Draw half a profile (like half a vase) with its straight "
+                               "side on the axis."), False, False, 0)
+        rv.pack_start(self.row("Axis", self.seg("rev_axis", [("left", "Left edge"), ("center", "Center"), ("right", "Right edge")])),
+                      False, False, 0)
+        rv.pack_start(self.slider("rev_angle", "Angle", 1, 360, 1, "°"), False, False, 0)
+        rv.pack_start(self.slider("rev_offset", "Offset", 0, 300, 1, "px",
+                                  tip="Distance from the axis — makes rings and hollow shapes"), False, False, 0)
+        rv.pack_start(self.slider("rev_segs", "Segments", 6, 128, 1, tip="More segments = smoother, larger file"), False, False, 0)
+        rv.pack_start(self.when(self.toggle("rev_caps", "Cap the cut ends"), lambda s: float(s.get("rev_angle", 360)) < 360),
+                      False, False, 0)
+        self.shape_stack.add_named(rv, "revolve")
 
-    def grid(self, rows):
-        grid = Gtk.Grid(column_spacing=10, row_spacing=6)
-        for i, row in enumerate(rows):
-            kind, key = row[0], row[1]
-            if kind == "label":
-                lab = Gtk.Label(label=key, xalign=0)
-                lab.set_line_wrap(True)
-                lab.set_max_width_chars(44)
-                lab.get_style_context().add_class("v3d-hint")
-                grid.attach(lab, 0, i, 4, 1)
-                continue
-            text = row[2]
-            if kind == "slider":
-                lo, hi, unit = row[3], row[4], row[5]
-                cls = row[6] if len(row) > 6 else "d"
-                lab = Gtk.Label(xalign=0)
-                col = AXIS_HEX.get(cls) if cls in ("x", "y", "z") else None
-                lab.set_markup('<span foreground="%s">%s</span>' % (col, text) if col else text)
-                value = float(self.state.get(key, lo) or 0)
-                digits = 1 if key in FINE else 0
-                adj = Gtk.Adjustment(value=value, lower=min(lo, value), upper=max(hi, value),
-                                     step_increment=0.1 if digits else 1, page_increment=1 if digits else 10)
-                scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=adj)
-                scale.set_draw_value(False)
-                scale.set_hexpand(True)
-                scale.get_style_context().add_class("v3d-" + cls)
-                spin = Gtk.SpinButton(adjustment=adj, climb_rate=1, digits=digits)
-                spin.set_width_chars(4)
-                spin.set_numeric(True)
-                adj.connect("value-changed", lambda a, k=key: self.on_widget(k, a.get_value()))
-                self.bind.setdefault(key, []).append(lambda v, a=adj: a.set_value(float(v)) if v is not None else None)
-                for j, w in enumerate((lab, scale, spin, Gtk.Label(label=unit, xalign=0))):
-                    grid.attach(w, j, i, 1, 1)
-            elif kind == "check":
-                chk = Gtk.CheckButton(label=text)
-                chk.connect("toggled", lambda c, k=key: self.on_widget(k, c.get_active()))
-                self.bind.setdefault(key, []).append(lambda v, c=chk: c.set_active(bool(v)))
-                grid.attach(chk, 0, i, 4, 1)
-            elif kind == "outline":
-                chk = Gtk.CheckButton(label="Draw the outline and sharp edges")
-                chk.connect("toggled", lambda c: self.on_widget("edges", "outline" if c.get_active() else "none"))
-                self.bind.setdefault("edges", []).append(lambda v, c=chk: c.set_active(v not in (None, "none")))
-                grid.attach(Gtk.Label(label=text, xalign=0), 0, i, 1, 1)
-                grid.attach(chk, 1, i, 3, 1)
-            elif kind == "combo":
-                combo = Gtk.ComboBoxText()
-                for value, label in row[3]:
-                    combo.append(value, label)
-                combo.connect("changed", lambda c, k=key: c.get_active_id() and self.on_widget(k, c.get_active_id()))
-                self.bind.setdefault(key, []).append(lambda v, c=combo: c.set_active_id(str(v)))
-                grid.attach(Gtk.Label(label=text, xalign=0), 0, i, 1, 1)
-                grid.attach(combo, 1, i, 3, 1)
-            elif kind in ("color", "optcolor"):
-                btn = Gtk.ColorButton()
-                btn.set_hexpand(True)
-                if kind == "optcolor":
-                    chk = Gtk.CheckButton(label=text)
-                    chk.set_tooltip_text("Off: use the front color")
+        inf = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=9)
+        inf.pack_start(self.slider("inf_height", "Puffiness", 0, 300, 1, "px"), False, False, 0)
+        inf.pack_start(self.row("Profile", self.select("inf_profile", PROFILES)), False, False, 0)
+        inf.pack_start(self.slider("inf_spread", "Roundness", 5, 100, 1, "%",
+                                   tip="How far in from the edge the surface keeps rising"), False, False, 0)
+        inf.pack_start(self.row("Sides", self.seg("inf_sides", [("both", "Both sides"), ("front", "Front only")])), False, False, 0)
+        inf.pack_start(self.slider("inf_detail", "Detail", 12, 120, 1,
+                                   tip="Mesh resolution. Higher is smoother but slower and larger"), False, False, 0)
+        self.shape_stack.add_named(inf, "inflate")
 
-                    def toggled(c, k=key, b=btn):
-                        b.set_sensitive(c.get_active())
-                        self.on_widget(k, hexc((b.get_rgba().red, b.get_rgba().green, b.get_rgba().blue)) if c.get_active() else None)
+        fl = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=9)
+        fl.pack_start(self.tip("Flat keeps the artwork paper-thin — tilt it with the view controls to lay it on a floor, wall or "
+                               "box side."), False, False, 0)
+        self.shape_stack.add_named(fl, "flat")
+        page.pack_start(self.shape_stack, False, False, 0)
+        return page
 
-                    chk.connect("toggled", toggled)
-                    btn.connect("color-set", lambda b, k=key, c=chk: c.get_active() and self.on_widget(
-                        k, hexc((b.get_rgba().red, b.get_rgba().green, b.get_rgba().blue))))
+    def bevel_picker(self):
+        btn = styled(Gtk.MenuButton(), "bevel-btn")
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        thumb = Gtk.Image()
+        name = label("", xalign=0)
+        chev = Gtk.Image.new_from_pixbuf(svg_pixbuf(icon_svg("chevDown", T["muted"], 14)))
+        box.pack_start(thumb, False, False, 0)
+        box.pack_start(name, True, True, 0)
+        box.pack_start(chev, False, False, 0)
+        btn.add(box)
+        pop = Gtk.Popover()
+        styled(pop, "v3d-pop")
+        grid = Gtk.Grid(column_spacing=4, row_spacing=4)
+        tiles = {}
+        for i, (key, text) in enumerate(BEVEL_NAMES):
+            b = styled(Gtk.ToggleButton(), "tile")
+            b.set_size_request(64, -1)
+            v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            v.pack_start(svg_image(bevel_thumb(key, 36)), False, False, 0)
+            v.pack_start(label(text, xalign=0.5), False, False, 0)
+            b.add(v)
 
-                    def setter(v, c=chk, b=btn):
-                        c.set_active(bool(v))
-                        b.set_sensitive(bool(v))
-                        b.set_rgba(to_rgba(v or self.state.get("fill")))  # off: shows the front color
+            def chosen(tb, k=key):
+                if self._syncing or not tb.get_active():
+                    return
+                pop.popdown()
+                self.on_widget("bevel", k)
 
-                    self.bind.setdefault(key, []).append(setter)
-                    grid.attach(chk, 0, i, 1, 1)
-                else:
-                    btn.connect("color-set", lambda b, k=key: self.on_widget(
-                        k, hexc((b.get_rgba().red, b.get_rgba().green, b.get_rgba().blue))))
-                    self.bind.setdefault(key, []).append(lambda v, b=btn: v and b.set_rgba(to_rgba(v)))
-                    grid.attach(Gtk.Label(label=text, xalign=0), 0, i, 1, 1)
-                grid.attach(btn, 1, i, 3, 1)
-        return grid
+            b.connect("toggled", chosen)
+            grid.attach(b, i % 4, i // 4, 1, 1)
+            tiles[key] = b
+        grid.show_all()
+        pop.add(grid)
+        btn.set_popover(pop)
+
+        def show(v):
+            v = v or "none"
+            thumb.set_from_pixbuf(svg_pixbuf(bevel_thumb(v, 28)))
+            name.set_text("No bevel" if v == "none" else dict(BEVEL_NAMES).get(v, v))
+            for k, b in tiles.items():
+                b.set_active(k == v)
+
+        self.bind.setdefault("bevel", []).append(show)
+        return btn
+
+    def build_surface(self):
+        page = self.page()
+        items = [(k, t, svg_image(material_ball(k, fill or T["mat_base"]))) for k, t, fill in MATERIALS]
+        page.pack_start(self.tiles(items, 5, self.apply_material), False, False, 0)
+        page.pack_start(self.row("Shading", self.select("shading", SHADINGS)), False, False, 0)
+        shaded = lambda s: s.get("shading") not in PLAIN_SHADINGS  # noqa: E731
+        page.pack_start(self.when(self.toggle("smooth", "Smooth gradients",
+                                              "Draw curved surfaces with vector gradients instead of flat facets"), shaded),
+                        False, False, 0)
+        page.pack_start(self.when(self.slider("steps", "Color bands", 0, 10, 1,
+                                              tip="0 = continuous shading. 2–6 gives a poster / cel look."), shaded), False, False, 0)
+        page.pack_start(self.when(self.slider("smooth_angle", "Smoothing angle", 0, 90, 1, "°",
+                                              tip="Edges sharper than this stay crisp"), shaded), False, False, 0)
+        return page
+
+    def build_colors(self):
+        page = self.page()
+        page.pack_start(self.color("fill", "Front", tip="Main color (the shape's fill)"), False, False, 0)
+        page.pack_start(self.when(self.color("side_color", "Sides", auto=True,
+                                             tip="Color of the extruded sides (Auto = same as front)"),
+                                  lambda s: s.get("kind") in ("extrude", "revolve")), False, False, 0)
+        page.pack_start(self.when(self.color("bevel_color", "Bevel", auto=True, fallback="side_color",
+                                             tip="Color of the bevel (Auto = same as sides)"),
+                                  lambda s: s.get("kind") == "extrude" and s.get("bevel", "none") != "none"), False, False, 0)
+        page.pack_start(self.color("back_color", "Back", auto=True, tip="Color of the back face"), False, False, 0)
+        shaded = lambda s: s.get("shading") not in PLAIN_SHADINGS  # noqa: E731
+        tone = self.seg("shadow_tone", [("auto", "Tinted", "Shadows shift toward a deep cool tone of the base color"),
+                                        ("black", "Black", None), ("custom", "Custom", None)])
+        page.pack_start(self.when(self.row("Shadow tone", tone), shaded), False, False, 0)
+        page.pack_start(self.when(self.color("shadow_tint", "Shadow color"),
+                                  lambda s: shaded(s) and s.get("shadow_tint") not in ("auto", "black", None)), False, False, 0)
+        page.pack_start(self.when(self.color("highlight", "Highlight", tip="Color of the brightest spots"), shaded),
+                        False, False, 0)
+        return page
+
+    def build_light(self):
+        page = self.page()
+        page.pack_start(self.toggle("shared_light", "Shared scene light",
+                                    "On: every 3D object in the drawing gets this light, so the scene looks consistent"),
+                        False, False, 0)
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.light_sphere = LightSphere(self)
+        row.pack_start(self.light_sphere, False, False, 0)
+        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.light_note = label("", "muted", wrap=True, width=22)
+        side.pack_start(self.light_note, False, False, 0)
+        side.set_valign(Gtk.Align.CENTER)
+        row.pack_start(side, True, True, 0)
+        page.pack_start(row, False, False, 0)
+        for key, text, hi, tip, unit in (("light_intensity", "Intensity", 200, "Strength of the main light", "%"),
+                                         ("light_ambient", "Ambient", 100, "Light that reaches every side", "%"),
+                                         ("light_fill", "Fill light", 100, "A soft second light from the opposite side", "%"),
+                                         ("light_specular", "Highlight", 150, "Brightness of shiny highlights", "%"),
+                                         ("light_gloss", "Gloss", 100, "Smaller, sharper highlights", "")):
+            page.pack_start(self.slider(key, text, 0, hi, 1, unit, tip=tip), False, False, 0)
+        return page
+
+    def build_outline(self):
+        page = self.page()
+        page.pack_start(self.row("Edge lines", self.seg("edges", [("none", "None", None),
+                                                                  ("outline", "Outline", "Silhouette and sharp edges"),
+                                                                  ("all", "All", "Every facet edge")])), False, False, 0)
+        lines = lambda s: s.get("edges") != "none" or s.get("shading") in ("lineart", "wire")  # noqa: E731
+        page.pack_start(self.when(self.color("edge_color", "Line color"), lines), False, False, 0)
+        page.pack_start(self.when(self.slider("edge_width", "Line width", 0.2, 8, 0.1, "px"), lines), False, False, 0)
+        page.pack_start(self.when(self.slider("crease_angle", "Crease angle", 5, 120, 1, "°",
+                                              tip="Only edges sharper than this get a line"), lines), False, False, 0)
+        page.pack_start(self.row("Shadow", self.seg("shadow", [("none", "None", None),
+                                                               ("drop", "Cast", "Shadow cast onto the page by the light"),
+                                                               ("floor", "Floor", "Soft contact shadow underneath")])),
+                        False, False, 0)
+        shadow = lambda s: s.get("shadow") != "none"  # noqa: E731
+        page.pack_start(self.when(self.slider("shadow_opacity", "Opacity", 0, 100, 1, "%"), shadow), False, False, 0)
+        page.pack_start(self.when(self.slider("shadow_blur", "Softness", 0, 40, 0.5, "px"), shadow), False, False, 0)
+        page.pack_start(self.when(self.slider("shadow_dist", "Distance", 0, 300, 1, "px"), lambda s: s.get("shadow") == "drop"),
+                        False, False, 0)
+        page.pack_start(self.when(self.color("shadow_color", "Shadow"), shadow), False, False, 0)
+        return page
+
+    def build_style(self):
+        page = self.page()
+        page.pack_start(self.sub("Fill"), False, False, 0)
+        page.pack_start(self.color("fill", "Fill", tip="The shape's color (the front of the 3D object)"), False, False, 0)
+        page.pack_start(self.sub("Outline"), False, False, 0)
+        page.pack_start(self.toggle("edges", "Outline", "Draw the silhouette and sharp edges",
+                                    getter=lambda v: v not in (None, "none"),
+                                    setter=lambda on: "outline" if on else "none"), False, False, 0)
+        outline = lambda s: s.get("edges") not in (None, "none")  # noqa: E731
+        page.pack_start(self.when(self.color("edge_color", "Color"), outline), False, False, 0)
+        page.pack_start(self.when(self.slider("edge_width", "Width", 0.2, 8, 0.1, "px"), outline), False, False, 0)
+        page.pack_start(self.sub("Opacity"), False, False, 0)
+        page.pack_start(self.slider("opacity", "Opacity", 0, 100, 1, "%"), False, False, 0)
+        return page
 
     # ---- state
     def on_widget(self, key, value):
         if not self._syncing:
-            self.set_values({key: value}, from_widget=True)
+            self.set_values({key: value})
         return False
 
-    def set_values(self, values, from_widget=False):
+    def set_values(self, values):
+        values = dict(values)
+        if "shadow_tone" in values:  # the Tinted / Black / Custom buttons edit shadow_tint
+            tone = values.pop("shadow_tone")
+            values["shadow_tint"] = tone if tone in ("auto", "black") else (
+                self.state.get("shadow_tint") if self.state.get("shadow_tint") not in ("auto", "black", None) else "#2a2350")
         for key, value in values.items():
             self.state[key] = value
-            self.touched.add(key)
-        self.sync(values.keys())
-        if "fill" in values:  # the cube icons show the front color
-            self.cube_color = rgb(values["fill"], self.cube_color)
-            self.trackball._key = None
-            for k, img in self.preset_images:
-                img.set_from_pixbuf(preset_icon(*E.PRESETS[k], self.cube_color))
+            if key != "shared_light":
+                self.touched.add(key)
+        keys = set(values)
+        if "shadow_tint" in keys:
+            keys.add("shadow_tone")
+        if "fill" in keys:  # Auto colors show the front color
+            keys.update(("side_color", "bevel_color", "back_color"))
+        if "side_color" in keys:
+            keys.add("bevel_color")
+        self.sync(keys)
+        if "kind" in values:
+            self.shape_stack.set_visible_child_name(values["kind"])
         self.changed()
+
+    def value_for(self, key):
+        if key == "shadow_tone":
+            tint = self.state.get("shadow_tint")
+            return tint if tint in ("auto", "black") else "custom"
+        return self.state.get(key)
 
     def sync(self, keys):
         self._syncing = True
         try:
             for key in keys:
                 for setter in self.bind.get(key, []):
-                    setter(self.state.get(key))
+                    setter(self.value_for(key))
         finally:
             self._syncing = False
+        self.apply_rules()
+        self.paint_icons()
+
+    def apply_rules(self):
+        for widget, predicate in self.rules:
+            show = bool(predicate(self.state))
+            widget.set_no_show_all(not show)
+            if show:
+                widget.show_all()
+            else:
+                widget.hide()
+        shared = self.state.get("shared_light", True)
+        self.light_note.set_text("Drag the sun. This light is shared by all 3D objects." if shared
+                                 else "Drag the sun. This light only affects the selected objects.")
 
     def sync_all(self):
         self.sync(list(self.bind.keys()))
-        self._syncing = True
-        self.kind_buttons[self.state["kind"]].set_active(True)
-        self._syncing = False
         self.shape_stack.set_visible_child_name(self.state["kind"])
-        self.update_kind_icons()
         self.trackball.redraw()
         self.light_sphere.redraw()
 
-    def on_kind(self, button, kind):
-        if self._syncing:
-            return
-        if not button.get_active():
-            if self.state["kind"] == kind:  # keep one pressed
-                self._syncing = True
-                button.set_active(True)
-                self._syncing = False
-            return
-        self._syncing = True
-        for k, b in self.kind_buttons.items():
-            if k != kind:
-                b.set_active(False)
-        self._syncing = False
-        self.shape_stack.set_visible_child_name(kind)
-        self.set_values({"kind": kind})
-        self.update_kind_icons()
-
-    def update_kind_icons(self):
-        fg = self.kind_buttons["flat"].get_style_context().get_color(Gtk.StateFlags.NORMAL)
-        self.icon_color = hexc((fg.red, fg.green, fg.blue))  # the theme's button text color
-        for k, icon in self.kind_icons.items():
-            icon.set_from_pixbuf(kind_icon(k, "#231503" if k == self.state["kind"] else self.icon_color))
-
     def apply_material(self, name):
-        values = dict(E.MATERIALS.get(name, {}))
+        values = {"edges": "none", "steps": 0}
+        values.update(E.MATERIALS.get(name, {}))
         self.set_values(values)
 
     def set_rotation(self, rx, ry, rz):
@@ -900,7 +1294,7 @@ class EditorWindow(Gtk.Window):
                        % (f(x + 2 / s), f(y + 3 / s), f(w), f(h)))
             out.append('<rect x="%s" y="%s" width="%s" height="%s" fill="#ffffff"/>' % (f(x), f(y), f(w), f(h)))
         if self.show_ctx.get_active() and self.context:
-            out.append('<g opacity="0.38" stroke-linejoin="round">')
+            out.append('<g opacity="0.32" stroke-linejoin="round">')
             for item in self.context:
                 if not item.get("d"):
                     continue
@@ -976,7 +1370,7 @@ def run(init, render_cb, context, pages, cube_color, count):
 def _autotest(win, script):
     """Test hook: drive the window from a JSON script, screenshot it, then apply or cancel."""
     if script.get("kind"):
-        win.kind_buttons[script["kind"]].set_active(True)
+        win.set_values({"kind": script["kind"]})
     if script.get("preset"):
         win.set_rotation(*E.PRESETS[script["preset"]])
     for dx, dy in script.get("drag", []):
@@ -987,10 +1381,8 @@ def _autotest(win, script):
         win.apply_material(script["material"])
     if script.get("set"):
         win.set_values(script["set"])
-    for name in script.get("expand", []):
-        win.sections[name.upper()].set_expanded(True)
-    for name in script.get("collapse", []):
-        win.sections[name.upper()].set_expanded(False)
+    if script.get("tab"):
+        win.show_tab(script["tab"])
 
     def finish():
         win.render(draft=False)

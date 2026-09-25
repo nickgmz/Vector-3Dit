@@ -68,6 +68,7 @@ SVG = """<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inks
     <path id="heart" style="fill:#e8505b" d="M 40,30 C 40,15 20,10 15,25 C 10,40 30,55 40,65 C 50,55 70,40 65,25 C 60,10 40,15 40,30 Z"/>
     <rect id="box" x="100" y="20" width="50" height="35" rx="4" style="fill:#3d7bf2" transform="rotate(10 125 37)"/>
     <text id="label" x="20" y="120">Hi</text>
+    <g id="logo"><rect id="l1" x="120" y="90" width="12" height="30" style="fill:#3d7bf2"/><circle id="l2" cx="150" cy="100" r="9" style="fill:#e0457b"/></g>
   </g>
 </svg>
 """
@@ -189,6 +190,31 @@ def test_editor_window():
     check(p.returncode == 0 and ok, "editor window applies every section, in document units", p.stderr[-300:] or str(fx)[:300])
     style = source.get("style") or ""
     check("fill:#2f9e8f" in style and "opacity:0.8" in style, "style section sets the shape's fill and opacity", style)
+
+    # Shared scene light: changing the light on one object relights every 3D object; switched off, only the selection.
+    box_id = [k for k in results if k != res_id][0]
+    out6, out7 = os.path.join(tmp, "6.svg"), os.path.join(tmp, "7.svg")
+    p = run_window({"set": {"light_az": 70, "light_el": 10}, "apply": True}, ["--id=" + res_id], out2, out6)
+    lights = {g.get("id"): json.loads(g.get("data-v3d"))["light"]["az"]
+              for g in etree.parse(out6).xpath("//svg:g[@data-v3d]", namespaces=ns)}
+    check(p.returncode == 0 and lights.get(box_id) == 70 and lights.get(res_id) == 70, "shared scene light relights every 3D object",
+          str(lights))
+    p = run_window({"set": {"shared_light": False, "light_az": 10}, "apply": True}, ["--id=" + res_id], out6, out7)
+    lights = {g.get("id"): json.loads(g.get("data-v3d"))["light"]["az"]
+              for g in etree.parse(out7).xpath("//svg:g[@data-v3d]", namespaces=ns)}
+    check(p.returncode == 0 and lights.get(res_id) == 10 and lights.get(box_id) == 70, "unshared light only changes the selection",
+          str(lights))
+
+    # A shape made 3D as part of a group keeps turning around the group's center when edited on its own.
+    out8, out9 = os.path.join(tmp, "8.svg"), os.path.join(tmp, "9.svg")
+    p = run_ext(["--kind=extrude", "--id=logo"], src, out8)
+    doc = etree.parse(out8)
+    member = [g for g in doc.xpath("//svg:g[@data-v3d]", namespaces=ns) if "pivot_offset" in g.get("data-v3d")]
+    check(p.returncode == 0 and len(member) == 2, "group members remember the group's turning point")
+    before = member[0].xpath(".//svg:g[@class='v3d-faces']/svg:path/@d", namespaces=ns)[:3]
+    p = run_window({"set": {"steps": 0}, "apply": True}, ["--id=" + member[0].get("id")], out8, out9)
+    after = etree.parse(out9).xpath("//*[@id='%s']//svg:g[@class='v3d-faces']/svg:path/@d" % member[0].get("id"), namespaces=ns)[:3]
+    check(p.returncode == 0 and before and before == after, "editing one group member alone keeps it in place")
 
     rx = heart.get("rx")
     p = run_ext(["--kind=extrude", "--bevel=round", "--id=" + res_id], out2, out4)

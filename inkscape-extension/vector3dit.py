@@ -297,8 +297,18 @@ class Vector3Dit(inkex.EffectExtension):
             if key in pivots and len([t for t in targets if t[2] == key]) > 1:
                 b = pivots[key]
                 pivot = [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2]
+            elif res is not None:
+                pivot = self.stored_pivot(res, subs)
             plan.append((src, res, subs, pivot))
         return plan, skipped_text
+
+    def stored_pivot(self, res, subs):
+        """The point a result turns around, if it was made as part of a group (kept relative to the shape)."""
+        off = self.stored_settings(res).get("pivot_offset")
+        bb = E.path_bbox(subs)
+        if not off or not bb:
+            return None
+        return [(bb[0] + bb[2]) / 2 + off[0], (bb[1] + bb[3]) / 2 + off[1]]
 
     @staticmethod
     def stored_settings(res):
@@ -348,7 +358,10 @@ class Vector3Dit(inkex.EffectExtension):
         out = E.render(subs, fx, fill=fill, opacity=opacity, id_prefix=prefix, pivot=pivot)
         parent_ct = res.getparent().composed_transform()
         res.transform = -parent_ct
-        data = {k: v for k, v in fx.items() if k != "fill"}
+        data = {k: v for k, v in fx.items() if k not in ("fill", "pivot_offset")}
+        bb = E.path_bbox(subs)
+        if pivot and bb:  # remember the group's turning point relative to this shape, so moves carry it along
+            data["pivot_offset"] = [round(pivot[0] - (bb[0] + bb[2]) / 2, 4), round(pivot[1] - (bb[1] + bb[3]) / 2, 4)]
         if material_fill:
             data["fill"] = material_fill  # a material's own color, kept for later re-renders
         res.set(RESULT_ATTR, json.dumps(data, separators=(",", ":")))
@@ -495,7 +508,27 @@ class Vector3Dit(inkex.EffectExtension):
             if "opacity" in touched:
                 src.style["opacity"] = E.fmt(opacity, 3)
             self.render_one(src, item["res"], item["subs"], settings_for(item, state, touched), material, item["pivot"])
+        light_keys = [k for k in touched if k.startswith("light_")]
+        if state.get("shared_light", True) and light_keys:
+            self.share_light(self.from_ui(state, light_keys)[1], [item["res"] for item in items])
         return None
+
+    def share_light(self, light, skip):
+        """Shared scene light: give every other 3D object in the drawing the same light."""
+        done = {id(r) for r in skip if r is not None}
+        for res in self.svg.xpath("//svg:g[@%s]" % RESULT_ATTR):
+            if id(res) in done or res in skip:
+                continue
+            src = res.find(".//{%s}path[@class='%s']" % (SVG_NS, SOURCE_CLASS))
+            if src is None:
+                continue
+            subs = self.world_subpaths(src)
+            if not subs:
+                continue
+            fx = self.stored_settings(res)
+            fill = fx.pop("fill", None)
+            fx["light"] = dict((fx.get("light") or E.defaults()["light"]), **light)
+            self.render_one(src, res, subs, fx, fill, self.stored_pivot(res, subs))
 
     def page_rects(self):
         rects = []

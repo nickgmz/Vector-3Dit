@@ -16,8 +16,8 @@ Display fonts and the UI font load from Google Fonts when you're online, and fal
 
 ### Inkscape extension
 
-The same 3D effects are also available inside Inkscape (1.2 or newer). **Extensions › Vector 3Dit › 3D Editor…** opens one window with
-every setting (view and rotation with a drag-to-turn trackball, shape, surface and material, colors, light, outlines and shadow, style)
+The same 3D effects are also available inside Inkscape (1.2 or newer). **Extensions › Vector 3Dit › 3D Editor…** opens a window that
+looks like this app's 3D panel, with tabs for view (trackball and preset views), shape, surface, colors, light, outline and style,
 and a live preview of the objects in place on the page.
 See [`inkscape-extension/`](inkscape-extension/) for install steps.
 
