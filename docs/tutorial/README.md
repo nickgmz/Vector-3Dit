@@ -34,6 +34,7 @@ Every picture is a real screenshot of the editor.
 | --- | --- |
 | **Kind** (top of the panel) | Flat, Extrude, Revolve or Inflate: how the flat shape becomes 3D. |
 | **Tabs** | View, Shape, Surface, Colors, Light, Outline and Style. Each holds one group of tools. |
+| **Camera** (top of the View tab) | Save the view and lock several objects to it, so a whole scene shares one vantage point ([lesson 11](#11-one-camera-for-the-whole-scene)). |
 | **Trackball** | The little cube shows which way the object faces. Drag it to turn. |
 | **Preview** (left) | Your page, with the objects in 3D exactly where they'll land. The rest of the drawing is faded behind them. |
 | **Preview tools** (top) | **Other objects** shows or hides the rest of the drawing, **Full color** shows it in its real colors, and **Fit selection** / **Fit page** zoom. |
