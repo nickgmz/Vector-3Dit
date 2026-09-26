@@ -20,6 +20,8 @@
       this.hoverId = null;
       this.clipboard = null;
       this.fxClipboard = null;
+      // What turning edits inside a scene camera: 'camera' (every object on it) or 'object' (the selection alone).
+      this.turnMode = 'camera';
       this.style = Doc.defaultStyle();
       this.prefs = Object.assign(
         {
@@ -31,6 +33,9 @@
           rulers: true,
           lockRatio: false,
           welcomed: false,
+          // While 3D objects are edited on the 3D tab, the rest of the drawing shows faded (like the Inkscape extension's preview).
+          otherObjects: true,
+          otherFullColor: false,
         },
         U.storage.get(PREFS_KEY, {})
       );
@@ -99,6 +104,7 @@
       const doc = Object.assign(Doc.create(), d);
       doc.scene = Object.assign({ light: R3D.defaultLight(), seam: 1 }, d.scene || {});
       doc.scene.light = Object.assign(R3D.defaultLight(), doc.scene.light || {});
+      doc.scene.cameras = Object.assign({}, doc.scene.cameras || {});
       Doc.walk(doc.objects, (o) => {
         if (o.fx) o.fx = R3D.normalize(o.fx);
         if (!o.transform) o.transform = M2.identity();
@@ -143,6 +149,7 @@
     setPref(k, v) {
       this.prefs[k] = v;
       this.savePrefs();
+      if (k === 'otherObjects' || k === 'otherFullColor') this.canvas.applyFade();
       if (k === 'theme') this.applyTheme();
       if (k === 'grid' || k === 'gridSize') this.canvas.renderGrid();
       if (k === 'rulers') this.root.classList.toggle('no-rulers', !v);
@@ -543,6 +550,15 @@
           const p = Object.assign({}, props);
           if (x !== o) delete p.opacity;
           Object.assign(x.style, p);
+          // A 3D object's stroke is its edge lines (and the shape keeps it after Remove 3D).
+          if (x.fx && 'stroke' in p) {
+            const c = typeof p.stroke === 'string' ? p.stroke : p.stroke ? R3D.solidOf(p.stroke) : null;
+            if (c && c !== 'none') {
+              x.fx.edgeColor = Color.normalize(c);
+              if (!x.fx.edges || x.fx.edges === 'none') x.fx.edges = 'outline';
+            } else x.fx.edges = 'none';
+          }
+          if (x.fx && p.strokeWidth > 0) x.fx.edgeWidth = p.strokeWidth;
           this.touch(x);
         });
       Object.assign(this.style, props);
@@ -550,6 +566,7 @@
       this.style.opacity = 1;
       this.requestRender();
       if (final) this.commit(label);
+      if (objs.some((o) => o.fx || o.type === 'group')) this.bus.emit('fx');
     }
     setProps(objs, props, final = true, label = 'Edit') {
       for (const o of objs) {
@@ -955,6 +972,7 @@
             o.fx.rx = 12;
             o.fx.ry = -18;
           }
+          this.carryStroke(o);
           this.setPivot(o, pivots.get(o.id));
         } else {
           o.fx.kind = kind;
@@ -964,6 +982,12 @@
       this.requestRender();
       this.commit(R3D.kinds[kind].name);
       this.bus.emit('fx');
+    }
+    /** A shape that has an outline keeps it in 3D: its stroke becomes the 3D object's edge lines. */
+    carryStroke(o) {
+      const st = o.style || {};
+      const c = typeof st.stroke === 'string' ? st.stroke : st.stroke ? R3D.solidOf(st.stroke) : null;
+      if (c && c !== 'none' && st.strokeWidth > 0) Object.assign(o.fx, { edges: 'outline', edgeColor: Color.normalize(c), edgeWidth: st.strokeWidth });
     }
     /** For shapes reached through a selected group: that group's centre (world space). */
     groupPivots() {
@@ -1056,6 +1080,172 @@
       if (final) this.commitSoon('Light');
       this.bus.emit('fx');
     }
+    /* ---------------- scene cameras ---------------- */
+    // A saved camera (doc.scene.cameras) is a view shared by every object locked to it: its angles, perspective,
+    // turning point and camera distance. Inside it, each object can still turn on its own and be pushed back.
+    cameraOf(o) {
+      return Doc.cameraOf(o, this.doc.scene);
+    }
+    /** The camera the 3D selection is locked to ('' when none). */
+    lockedCamera() {
+      const o = this.fxTargets(true).pop();
+      return o && this.cameraOf(o) ? o.fx.camera : '';
+    }
+    /** Where a new camera can turn around, the page's or the selection's center, and how far the scene reaches. */
+    cameraPlaces() {
+      let sel = null;
+      for (const o of this.fxTargets(true)) sel = V3D.Rect.union(sel, Path.bbox(this.worldSubs(o)));
+      const page = { x: 0, y: 0, x2: this.doc.width, y2: this.doc.height };
+      if (!V3D.Rect.valid(sel)) sel = page;
+      const c = (b) => [U.fmt(V3D.Rect.cx(b), 4) * 1, U.fmt(V3D.Rect.cy(b), 4) * 1];
+      const reach = Math.max(Math.hypot(V3D.Rect.w(page), V3D.Rect.h(page)), Math.hypot(V3D.Rect.w(sel), V3D.Rect.h(sel))) / 2;
+      return { page: c(page), selection: c(sel), reach: U.fmt(reach, 4) * 1 };
+    }
+    saveCamera(name, around = 'page') {
+      const objs = this.fxTargets(true);
+      if (!name || !objs.length) return;
+      const o = objs[objs.length - 1];
+      const v = Doc.view3D(o, this.worldMatrix(o), this.doc.scene).fx;
+      const places = this.cameraPlaces();
+      this.doc.scene.cameras[name] = { rx: v.rx, ry: v.ry, rz: v.rz, persp: v.persp, pivot: places[around] || places.page, reach: places.reach };
+      for (const x of objs) {
+        x.fx.camera = name;
+        this.touch(x);
+      }
+      this.sceneChanged();
+      this.requestRender();
+      this.commit('Save camera');
+      this.bus.emit('fx');
+      this.toast(`Saved the camera “${name}”`);
+    }
+    /** Locks the 3D selection to a saved camera, or unlocks it (''), keeping exactly how it looks. */
+    useCamera(name) {
+      const cam = name && this.doc.scene.cameras[name];
+      for (const o of this.fxTargets(true)) {
+        if (cam) {
+          Object.assign(o.fx, { camera: name, rx: cam.rx, ry: cam.ry, rz: cam.rz, persp: cam.persp });
+        } else this.dropCamera(o);
+        this.touch(o);
+      }
+      this.sceneChanged();
+      this.requestRender();
+      this.commit(cam ? 'Lock to camera' : 'Unlock camera');
+      this.bus.emit('fx');
+    }
+    /** Unlocks one object and gives it the camera's view as its own, so it stays exactly where it is. */
+    dropCamera(o) {
+      const cam = this.cameraOf(o);
+      if (cam) {
+        Object.assign(o.fx, { rx: cam.rx, ry: cam.ry, rz: cam.rz, persp: cam.persp, sceneRadius: cam.reach });
+        this.setPivot(o, cam.pivot);
+      }
+      delete o.fx.camera;
+    }
+    deleteCamera(name = this.lockedCamera()) {
+      if (!name || !this.doc.scene.cameras[name]) return;
+      Doc.walk(this.doc.objects, (o) => {
+        if (o.fx && o.fx.camera === name) {
+          this.dropCamera(o);
+          this.touch(o);
+        }
+      });
+      delete this.doc.scene.cameras[name];
+      this.sceneChanged();
+      this.requestRender();
+      this.commit('Delete camera');
+      this.bus.emit('fx');
+    }
+    /** Changes a camera's angles or perspective: every object locked to it follows. */
+    setCameraView(props, final = true) {
+      const name = this.lockedCamera();
+      const cam = name && this.doc.scene.cameras[name];
+      if (!cam) return;
+      Object.assign(cam, props);
+      this.sceneChanged();
+      this.setDraft(final ? null : this.lockedTo(name));
+      this.requestRender();
+      if (final) this.commitSoon('Turn camera');
+      this.bus.emit('fx');
+    }
+    /** Perspective of the 3D selection: its camera's when it's locked to one. */
+    perspective() {
+      const o = this.fxTargets(true).pop();
+      if (!o) return null;
+      const cam = this.cameraOf(o);
+      return cam ? cam.persp : o.fx.persp;
+    }
+    setPerspective(v, final = true) {
+      if (this.lockedCamera()) this.setCameraView({ persp: v }, final);
+      else this.setFx('persp', v, final);
+    }
+    lockedTo(name) {
+      const ids = [];
+      Doc.walk(this.doc.objects, (o) => {
+        if (o.fx && o.fx.camera === name) ids.push(o.id);
+      });
+      return ids;
+    }
+    /** True when an object's own turn and push back apply: inside a camera, or while they're in use. */
+    placementShown(o) {
+      const f = o && o.fx;
+      return !!(f && (this.cameraOf(o) || f.objRx || f.objRy || f.objRz || f.objPush));
+    }
+    setTurnMode(mode) {
+      this.turnMode = mode;
+      this.bus.emit('fx');
+      this.requestOverlay();
+    }
+    /** What turning object o changes: its own view, the camera it's locked to, or its own turn in the scene. */
+    turnTarget(o) {
+      if (this.turnMode === 'object' && this.placementShown(o)) return { keys: ['objRx', 'objRy', 'objRz'], obj: o };
+      const cam = this.cameraOf(o);
+      if (cam) return { cam, name: o.fx.camera };
+      return { keys: ['rx', 'ry', 'rz'], obj: o };
+    }
+    /** The turn targets of several objects, each camera once. */
+    turnTargets(objs = this.fxTargets(true)) {
+      const out = new Map();
+      for (const o of objs) {
+        if (!o.fx) continue;
+        const t = this.turnTarget(o);
+        const key = t.cam ? 'cam:' + t.name : o.id;
+        if (!out.has(key)) out.set(key, t);
+      }
+      return [...out.values()];
+    }
+    getTurn(t) {
+      return t.cam ? [t.cam.rx, t.cam.ry, t.cam.rz] : t.keys.map((k) => t.obj.fx[k] || 0);
+    }
+    setTurn(t, r) {
+      if (t.cam) {
+        [t.cam.rx, t.cam.ry, t.cam.rz] = r;
+        this.sceneChanged();
+      } else {
+        t.keys.forEach((k, i) => (t.obj.fx[k] = r[i]));
+        this.touch(t.obj);
+      }
+    }
+    /** Turns the 3D selection (camera, own view or own turn in the scene, as the turn mode says). */
+    turnSelection(r, final, label = 'Rotate in 3D') {
+      const objs = this.fxTargets(true);
+      if (!objs.length) return;
+      const draft = new Set();
+      for (const t of this.turnTargets(objs)) {
+        this.setTurn(t, r);
+        for (const id of t.cam ? this.lockedTo(t.name) : [t.obj.id]) draft.add(id);
+      }
+      this.setDraft(final ? null : [...draft]);
+      this.requestRender();
+      if (final) this.commit(label);
+      this.bus.emit('fx');
+    }
+    /** Ids of the objects being edited in 3D when the rest of the drawing is faded; null when nothing is. */
+    fadeFocus() {
+      if (!this.ui || this.ui.tab !== '3d' || (this.prefs.otherObjects && this.prefs.otherFullColor)) return null;
+      const objs = this.fxTargets(true);
+      return objs.length ? new Set(objs.map((o) => o.id)) : null;
+    }
+
     copy3D() {
       const o = this.fxTargets(true).pop();
       if (!o) {
@@ -1072,7 +1262,7 @@
       }
       const objs = this.fxTargets();
       objs.forEach((o) => {
-        o.fx = Object.assign(U.clone(this.fxClipboard), { pivot: o.fx ? o.fx.pivot : null });
+        o.fx = Object.assign(U.clone(this.fxClipboard), { pivot: o.fx ? o.fx.pivot : null, camera: o.fx ? o.fx.camera : undefined });
         this.touch(o);
       });
       this.requestRender();
@@ -1088,9 +1278,10 @@
       }
       const ids = [];
       for (const o of objs) {
-        const r = V3D.R3D.render(this.worldSubs(o), o.fx, o.style, this.doc.scene, { id: o.id + 'x', quality: 'full' });
+        const v = Doc.view3D(o, this.worldMatrix(o), this.doc.scene);
+        const r = V3D.R3D.render(this.worldSubs(o), v.fx, o.style, this.doc.scene, { id: o.id + 'x', quality: 'full', pivot: v.pivot });
         const g = V3D.IO.markupToGroup(r.markup, this.parentMatrix(o.id));
-        g.name = (o.name || Doc.typeName(o)) + ' (expanded)';
+        g.name = `3D ${R3D.kinds[o.fx.kind].name}: ${o.name || Doc.typeName(o)}`;
         this.replaceObject(o, g);
         ids.push(g.id);
       }

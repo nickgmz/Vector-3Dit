@@ -4,7 +4,7 @@
   "private": true,
   "description": "Vector drawing app with real 3D tools: extrude, revolve and inflate shapes into vector 3D art.",
   "scripts": {
-    "test": "node tests/core.test.cjs && node tests/mesh.test.cjs",
+    "test": "node tests/core.test.cjs && node tests/mesh.test.cjs && node tests/scene.test.cjs",
     "build": "node tools/build.mjs"
   }
 }

@@ -1000,6 +1000,9 @@ def defaults(kind="extrude", size=200.0):
         "edges": "none", "edge_color": "#1b1c22", "edge_width": 1.5, "crease_angle": 40,
         "shadow": "none", "shadow_opacity": 0.28, "shadow_blur": 6, "shadow_dist": 40, "shadow_color": "#10121a",
         "seam": 1.0,
+        # Placement inside a scene camera: the object's own turn and how far it is pushed back.
+        "obj_rx": 0, "obj_ry": 0, "obj_rz": 0, "obj_push": 0,
+        "name_colors": "names",
     }
 
 
@@ -1172,6 +1175,333 @@ def quant(u, steps):
 
 
 # --------------------------------------------------------------------------
+# names
+# --------------------------------------------------------------------------
+# Every output path is named "Fill - Light Blue - Front" or "Line - Black - Top": what it is, its color
+# and where it sits on the object, so the result is easy to find your way around in the Layers panel.
+
+HUE_NAMES = ((12, "Red"), (40, "Orange"), (66, "Yellow"), (160, "Green"), (190, "Cyan"), (250, "Blue"),
+             (285, "Purple"), (330, "Magenta"), (361, "Red"))
+
+
+def _unit(v):
+    """A channel as drawn: rounded to a whole 0-255 value, as a 0-1 fraction."""
+    return math.floor(clamp(v, 0, 255) + 0.5) / 255.0
+
+
+def cmyk_code(c):
+    """CMYK code of a color, like "C80 M40 Y0 K10"."""
+    r, g, b = _unit(c[0]), _unit(c[1]), _unit(c[2])
+    k = 1 - max(r, g, b)
+    d = (1 - k) or 1.0
+
+    def p(v):
+        return int(math.floor(max(0.0, v) * 100 + 0.5))
+
+    return "C%d M%d Y%d K%d" % (p((1 - r - k) / d), p((1 - g - k) / d), p((1 - b - k) / d), p(k))
+
+
+def color_name(c, mode="names"):
+    """A basic color name ("Light Blue", "Dark Gray"), or the CMYK code when no basic name fits or mode is 'cmyk'."""
+    if c is None:
+        return "None"
+    if mode == "cmyk":
+        return cmyk_code(c)
+    r, g, b = _unit(c[0]), _unit(c[1]), _unit(c[2])
+    mx, mn = max(r, g, b), min(r, g, b)
+    ch = mx - mn
+    l = (mx + mn) / 2
+    s = 0.0 if ch < 1e-9 else ch / (1 - abs(2 * l - 1))
+    if l < 0.07:
+        return "Black"
+    if l > 0.96:
+        return "White"
+    if s < 0.1 or ch < 0.06:
+        return "Black" if l < 0.16 else "Dark Gray" if l < 0.38 else "Gray" if l < 0.64 else "Light Gray" if l < 0.88 else "White"
+    if s < 0.2 and ch < 0.12:
+        return cmyk_code(c)  # a muted, grayish color: no basic name fits
+    h = (g - b) / ch if mx == r else (b - r) / ch + 2 if mx == g else (r - g) / ch + 4
+    h = math.fmod(h * 60 + 360, 360)
+    hue = next(name for top, name in HUE_NAMES if h < top)
+    if hue == "Orange" and (l < 0.42 or (s < 0.4 and l < 0.6)):
+        return "Dark Brown" if l < 0.22 else "Brown"
+    if hue in ("Orange", "Yellow") and s < 0.5 and l > 0.55:
+        return "Beige" if l > 0.8 else "Tan"
+    if hue == "Yellow" and l < 0.36:
+        return "Olive"
+    if hue in ("Red", "Magenta") and l > 0.72:
+        return "Light Pink" if l > 0.86 else "Pink"
+    if hue == "Blue" and l < 0.2:
+        return "Navy"
+    if hue == "Cyan" and l < 0.36:
+        return "Teal"
+    if hue == "Magenta" and l < 0.3:
+        return "Purple"
+    return ("Dark " if l < 0.28 else "Light " if l > 0.72 else "") + hue
+
+
+def face_position(f, flip, kind):
+    """Where a face sits on the object, from its own (unturned) normal: Front, Top, Left Side..."""
+    if flip:
+        return "Back" if kind == "flat" else "Inside"
+    if f.get("cap"):
+        return "Back" if f["cap"] == "back" else "Front"
+    if kind == "revolve" and f["mat"] == "front":
+        return "Cut End"
+    if f["mat"] == "bevel":
+        return "Front Bevel" if f["c"][2] >= 0 else "Back Bevel"
+    x, y, z = f["n"]
+    if abs(z) >= 0.75:
+        return "Front" if z > 0 else "Back"
+    if abs(x) < 1e-6 and abs(y) < 1e-6:
+        return "Side"
+    if abs(y) >= abs(x):
+        return "Top" if y > 0 else "Bottom"
+    return "Right Side" if x > 0 else "Left Side"
+
+
+# --------------------------------------------------------------------------
+# hidden lines
+# --------------------------------------------------------------------------
+# Lines are drawn above every fill, so each one is first cut back to the parts that no fill painted
+# after its own face covers. Faces and long outlines are found through grids so big meshes stay fast.
+
+BIG_POLY = 24
+
+
+class Occluder(object):
+    """An occluding face: loops of screen points [(x, y), ...]."""
+
+    __slots__ = ("E", "n", "x0", "y0", "x1", "y1", "grid")
+
+    def __init__(self, loops):
+        E = []
+        x0 = y0 = float("inf")
+        x1 = y1 = float("-inf")
+        for L in loops:
+            prev = L[-1]
+            for p in L:
+                E.append((prev[0], prev[1], p[0], p[1]))
+                prev = p
+                if p[0] < x0:
+                    x0 = p[0]
+                if p[0] > x1:
+                    x1 = p[0]
+                if p[1] < y0:
+                    y0 = p[1]
+                if p[1] > y1:
+                    y1 = p[1]
+        self.E, self.n = E, len(E)
+        self.x0, self.y0, self.x1, self.y1 = x0, y0, x1, y1
+        self.grid = None
+
+    def build_grid(self, eps):
+        """Edge grid for a big face; every edge is listed in each cell within eps of it."""
+        G = max(2, min(64, int(math.ceil(math.sqrt(self.n / 2.0)))))
+        cw = (self.x1 - self.x0) / G or 1.0
+        ch = (self.y1 - self.y0) / G or 1.0
+        cells = [[] for _ in range(G * G)]
+        x0, y0 = self.x0, self.y0
+        for e, (ax, ay, bx, by) in enumerate(self.E):
+            i0 = min(G - 1, max(0, int(math.floor((min(ax, bx) - eps - x0) / cw))))
+            i1 = min(G - 1, max(0, int(math.floor((max(ax, bx) + eps - x0) / cw))))
+            j0 = min(G - 1, max(0, int(math.floor((min(ay, by) - eps - y0) / ch))))
+            j1 = min(G - 1, max(0, int(math.floor((max(ay, by) + eps - y0) / ch))))
+            for j in range(j0, j1 + 1):
+                row = j * G
+                for i in range(i0, i1 + 1):
+                    cells[row + i].append(e)
+        self.grid = (G, cw, ch, cells)
+
+    def _cell(self, x, y):
+        G, cw, ch, _ = self.grid
+        return (min(G - 1, max(0, int(math.floor((x - self.x0) / cw)))),
+                min(G - 1, max(0, int(math.floor((y - self.y0) / ch)))))
+
+    def edges_near(self, x0, y0, x1, y1):
+        """The edges that may lie in the box."""
+        if self.grid is None:
+            return self.E
+        G, cells = self.grid[0], self.grid[3]
+        i0, j0 = self._cell(x0, y0)
+        i1, j1 = self._cell(x1, y1)
+        seen = set()
+        for j in range(j0, j1 + 1):
+            for i in range(i0, i1 + 1):
+                seen.update(cells[j * G + i])
+        E = self.E
+        return [E[e] for e in seen]
+
+    def inside(self, px, py, eps, ux, uy):
+        """True when (px, py) is inside the face (even-odd), unless it lies on an edge that runs along
+        the line's direction (ux, uy): a line along a face's outline stays visible."""
+        if px < self.x0 or px > self.x1 or py < self.y0 or py > self.y1:
+            return False
+        if self.grid is None:
+            edges = self.E
+        else:
+            # Only edges in this row, from here rightwards, can cross the ray; the point's own cell holds every near edge.
+            G, cells = self.grid[0], self.grid[3]
+            i0, j = self._cell(px, py)
+            seen = set()
+            for i in range(i0, G):
+                seen.update(cells[j * G + i])
+            E = self.E
+            edges = [E[e] for e in seen]
+        e2 = eps * eps
+        inside = False
+        for ax, ay, bx, by in edges:
+            if (ay > py) != (by > py) and px < ax + (py - ay) * (bx - ax) / (by - ay):
+                inside = not inside
+            ex, ey = bx - ax, by - ay
+            l2 = ex * ex + ey * ey
+            if l2 < 1e-18:
+                continue
+            t = ((px - ax) * ex + (py - ay) * ey) / l2
+            t = 0.0 if t < 0 else 1.0 if t > 1 else t
+            qx, qy = ax + ex * t - px, ay + ey * t - py
+            if qx * qx + qy * qy < e2 and abs(ex * uy - ey * ux) < 0.02 * math.sqrt(l2):
+                return False
+        return inside
+
+    def cover(self, x0, y0, x1, y1, eps, cov):
+        """Adds to cov the parts of segment (x0, y0)-(x1, y1), as (t0, t1) ranges, that lie inside the face."""
+        dx, dy = x1 - x0, y1 - y0
+        ts = [0.0, 1.0]
+        for ax, ay, bx, by in self.edges_near(min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)):
+            ex, ey = bx - ax, by - ay
+            den = dx * ey - dy * ex
+            if abs(den) < 1e-12:
+                continue
+            t = ((ax - x0) * ey - (ay - y0) * ex) / den
+            u = ((ax - x0) * dy - (ay - y0) * dx) / den
+            if 0 < t < 1 and 0 <= u <= 1:
+                ts.append(t)
+        ts.sort()
+        ln = math.hypot(dx, dy) or 1.0
+        ux, uy = dx / ln, dy / ln
+        for k in range(len(ts) - 1):
+            a, b = ts[k], ts[k + 1]
+            if b - a < 1e-9:
+                continue
+            m = (a + b) / 2
+            if self.inside(x0 + dx * m, y0 + dy * m, eps, ux, uy):
+                cov.append((a, b))
+
+
+def hide_lines(segs, faces, eps):
+    """Hidden-line removal. segs: [{x0, y0, x1, y1, r, adj}] where r is the draw rank of the segment's face
+    and adj the ranks of the faces it borders; faces: Occluders by draw rank (None for none).
+    Returns the visible pieces as (x0, y0, x1, y1, segment index)."""
+    real = [o for o in faces if o is not None]
+    out = []
+    if not real:
+        return [(s["x0"], s["y0"], s["x1"], s["y1"], si) for si, s in enumerate(segs)]
+    gx0 = min(o.x0 for o in real)
+    gy0 = min(o.y0 for o in real)
+    gx1 = max(o.x1 for o in real)
+    gy1 = max(o.y1 for o in real)
+    G = max(1, min(64, int(math.floor(math.sqrt(len(faces) / 3.0) + 0.5))))
+    cw = (gx1 - gx0) / G or 1.0
+    ch = (gy1 - gy0) / G or 1.0
+
+    def cx(x):
+        return min(G - 1, max(0, int(math.floor((x - gx0) / cw))))
+
+    def cy(y):
+        return min(G - 1, max(0, int(math.floor((y - gy0) / ch))))
+
+    cells = [[] for _ in range(G * G)]
+    for r, o in enumerate(faces):
+        if o is None:
+            continue
+        if o.n > BIG_POLY:
+            o.build_grid(eps)
+        for j in range(cy(o.y0), cy(o.y1) + 1):
+            for i in range(cx(o.x0), cx(o.x1) + 1):
+                cells[j * G + i].append(r)
+    for si, s in enumerate(segs):
+        x0, y0, x1, y1 = s["x0"], s["y0"], s["x1"], s["y1"]
+        sx0, sy0 = min(x0, x1) - eps, min(y0, y1) - eps
+        sx1, sy1 = max(x0, x1) + eps, max(y0, y1) + eps
+        cov = []
+        full = False
+        if sx1 >= gx0 and sx0 <= gx1 and sy1 >= gy0 and sy0 <= gy1:
+            cand = set()
+            for j in range(cy(sy0), cy(sy1) + 1):
+                for i in range(cx(sx0), cx(sx1) + 1):
+                    cand.update(cells[j * G + i])
+            r0, adj = s["r"], s["adj"]
+            for r in sorted(cand):
+                if r <= r0 or r in adj:
+                    continue
+                o = faces[r]
+                if o.x1 < sx0 or o.x0 > sx1 or o.y1 < sy0 or o.y0 > sy1:
+                    continue
+                n0 = len(cov)
+                o.cover(x0, y0, x1, y1, eps, cov)
+                if any(a <= 0 and b >= 1 for a, b in cov[n0:]):
+                    full = True
+                    break
+        if full:
+            continue
+        cov.sort()
+        ln = math.hypot(x1 - x0, y1 - y0) or 1.0
+        min_t = eps / ln
+        t = 0.0
+        pieces = []
+        for a, b in cov:
+            if a > t:
+                pieces.append((t, a))
+            if b > t:
+                t = b
+        if t < 1:
+            pieces.append((t, 1.0))
+        for a, b in pieces:
+            if b - a > min_t:
+                out.append((x0 + (x1 - x0) * a, y0 + (y1 - y0) * a, x0 + (x1 - x0) * b, y0 + (y1 - y0) * b, si))
+    return out
+
+
+def chain_d(pieces):
+    """Joins line pieces (a, b) (point strings) that meet end to end into one path "d"."""
+    at = {}
+    for i, (a, b) in enumerate(pieces):
+        at.setdefault(a, []).append(i)
+        at.setdefault(b, []).append(i)
+    used = [False] * len(pieces)
+
+    def nxt(p):
+        for i in at.get(p, ()):
+            if not used[i]:
+                return i
+        return -1
+
+    out = []
+    for i, (a, b) in enumerate(pieces):
+        if used[i]:
+            continue
+        used[i] = True
+        run = [a, b]
+        end = b  # grow forward from the end, then backward from the start
+        j = nxt(end)
+        while j >= 0:
+            used[j] = True
+            end = pieces[j][1] if pieces[j][0] == end else pieces[j][0]
+            run.append(end)
+            j = nxt(end)
+        start = a
+        j = nxt(start)
+        while j >= 0:
+            used[j] = True
+            start = pieces[j][1] if pieces[j][0] == start else pieces[j][0]
+            run.insert(0, start)
+            j = nxt(start)
+        out.append("M" + "L".join(run))
+    return "".join(out)
+
+
+# --------------------------------------------------------------------------
 # rendering
 # --------------------------------------------------------------------------
 
@@ -1180,16 +1510,18 @@ def quant(u, steps):
 VIEW_KEYS = frozenset(("rx", "ry", "rz", "persp", "shading", "smooth", "steps", "side_color", "bevel_color",
                        "back_color", "shadow_tint", "highlight", "light", "edges", "edge_color", "edge_width",
                        "crease_angle", "shadow", "shadow_opacity", "shadow_blur", "shadow_dist", "shadow_color",
-                       "seam", "fill", "scene_radius", "camera", "pivot_offset"))
+                       "seam", "fill", "scene_radius", "camera", "pivot_offset",
+                       "obj_rx", "obj_ry", "obj_rz", "obj_push", "name_colors"))
 
 
 def render(subs, fx_in, fill="#f2a541", opacity=1.0, id_prefix="v3d", pivot=None, mesh_cache=None):
     """Render shapes with 3D settings `fx_in`. Returns dict(defs, body, bbox, faces).
 
     `defs` is a list of gradient/filter markup strings (place them in <defs>),
-    `body` the markup of the faces (place it in a <g>). Coordinates are in the
-    same space as `subs`. Pass the same dict as `mesh_cache` on repeated calls
-    with the same `subs` list to skip rebuilding the mesh when only the view changes.
+    `body` the markup of the object (place it in a <g>): a "Shadow", a "Fills" and a "Lines" group, in
+    drawing order, where every path has a data-name like "Fill - Light Blue - Front". Coordinates are in the
+    same space as `subs`. Pass the same dict as `mesh_cache` on repeated calls with the same `subs` list to
+    skip rebuilding the mesh when only the view changes.
     """
     fx = defaults(fx_in.get("kind", "extrude"))
     fx.update({k: v for k, v in fx_in.items() if k != "light"})
@@ -1209,23 +1541,33 @@ def render(subs, fx_in, fill="#f2a541", opacity=1.0, id_prefix="v3d", pivot=None
     gcx, gcy = geom["center"]
     cx, cy = pivot if pivot else geom["center"]
     off = [gcx - cx, cy - gcy, 0.0]
-    has_off = abs(off[0]) > 1e-9 or abs(off[1]) > 1e-9
     R = from_euler(fx["rx"], fx["ry"], fx["rz"])
+    # In a scene camera an object can also turn on its own and move back or forward, leaving the camera as it is.
+    orx, ory, orz = fx.get("obj_rx") or 0, fx.get("obj_ry") or 0, fx.get("obj_rz") or 0
+    Rn = m_mul(R, from_euler(orx, ory, orz)) if (orx or ory or orz) else R
+    push = fx.get("obj_push") or 0
+    T = m_apply(R, [off[0], off[1], -push])
+
+    def place(v):
+        p = m_apply(Rn, v)
+        return [p[0] + T[0], p[1] + T[1], p[2] + T[2]]
+
     fov = clamp(fx["persp"], 0, 160)
     persp = fov > 0.5
     # A shared scene camera fixes the camera distance, so every object linked to it gets the same perspective.
-    radius = fx.get("scene_radius") or (mesh["radius"] + math.hypot(off[0], off[1]))
+    radius = fx.get("scene_radius") or (mesh["radius"] + math.sqrt(off[0] * off[0] + off[1] * off[1] + push * push))
     dist = radius * (1.1 + 1 / math.tan(rad(fov / 2))) if persp else float("inf")
     cam = [0.0, 0.0, dist]
 
     def project(p):
-        k = dist / max(1e-6, dist - p[2]) if persp else 1.0
+        # Points pulled up to the camera are held just in front of it instead of flipping behind it.
+        k = dist / max(dist * 0.1, dist - p[2]) if persp else 1.0
         return [cx + p[0] * k, cy - p[1] * k]
 
     P, S = [], []
     xs, ys = [], []
     for v in mesh["verts"]:
-        p = m_apply(R, [v[0] + off[0], v[1] + off[1], v[2]] if has_off else v)
+        p = place(v)
         P.append(p)
         s = project(p)
         S.append(s)
@@ -1259,8 +1601,8 @@ def render(subs, fx_in, fill="#f2a541", opacity=1.0, id_prefix="v3d", pivot=None
 
     vis = []
     for fi, f in enumerate(mesh["faces"]):
-        n = m_apply(R, f["n"])
-        c = m_apply(R, [f["c"][0] + off[0], f["c"][1] + off[1], f["c"][2]] if has_off else f["c"])
+        n = m_apply(Rn, f["n"])
+        c = place(f["c"])
         V = view_dir(c)
         flip = False
         if v_dot(n, V) <= 0:
@@ -1276,8 +1618,26 @@ def render(subs, fx_in, fill="#f2a541", opacity=1.0, id_prefix="v3d", pivot=None
     vis.sort(key=lambda v: v["key"])
     rank = {v["fi"]: i for i, v in enumerate(vis)}
 
-    face_edges = {}
-    if edges_mode == "outline" and not wire:
+    name_mode = "cmyk" if fx.get("name_colors") == "cmyk" else "names"
+
+    def cname(c):
+        return color_name(c, name_mode)
+
+    def pos_of(v):
+        return face_position(v["f"], v["flip"], fx["kind"])
+
+    # Which mesh edges become lines, each owned by the neighbouring face drawn last.
+    all_edges = edges_mode == "all" or wire
+    line_edges = []
+    if all_edges:
+        for e in mesh["edges"]:
+            owner = -1
+            for fi in e["f"]:
+                if fi in rank and (owner < 0 or rank[fi] > rank[owner]):
+                    owner = fi
+            if owner >= 0:
+                line_edges.append((e, owner))
+    elif edges_mode == "outline":
         cos_c = math.cos(rad(fx["crease_angle"]))
         for e in mesh["edges"]:
             vf = [fi for fi in e["f"] if fi in rank]
@@ -1291,13 +1651,15 @@ def render(subs, fx_in, fill="#f2a541", opacity=1.0, id_prefix="v3d", pivot=None
                 if v_dot(a["n"], b["n"]) < cos_c:
                     owner = vf[0] if rank[vf[0]] > rank[vf[1]] else vf[1]
             if owner >= 0:
-                face_edges.setdefault(owner, []).append((e["a"], e["b"]))
+                line_edges.append((e, owner))
 
     seam = fx["seam"]
     edge_color = to_hex(parse_color(fx["edge_color"], (27, 28, 34)))
     ew = fmt(fx["edge_width"], 2)
-    all_edges = edges_mode == "all" or wire
-    out, defs = [], []
+    line_name = "Line - " + cname(parse_color(edge_color)) + " - "
+    line_attrs = ' fill="none" stroke="%s" stroke-width="%s" stroke-linecap="round" stroke-linejoin="round"' % (edge_color, ew)
+    fills, defs = [], []
+    shadow_mk = ""
     counter = [0]
     face_count = 0
 
@@ -1307,17 +1669,35 @@ def render(subs, fx_in, fill="#f2a541", opacity=1.0, id_prefix="v3d", pivot=None
     def loop_d(loops):
         return "".join("M" + "L".join(pt(v) for v in l) + "Z" for l in loops)
 
-    def stroke_for(color):
-        if all_edges:
-            return ' class="e" stroke="%s" stroke-width="%s" stroke-linejoin="round"' % (edge_color, ew)
-        return ' stroke="%s"' % color if seam > 0 else ""
+    def loop_d1(l):
+        """One loop, always wound the same way on screen, so merged faces never cancel each other out."""
+        a = 0.0
+        j = l[-1]
+        for i in l:
+            a += S[j][0] * S[i][1] - S[i][0] * S[j][1]
+            j = i
+        return "M" + "L".join(pt(v) for v in (l[::-1] if a < 0 else l)) + "Z"
 
-    def emit_edges(fi):
-        lst = face_edges.get(fi)
-        if not lst:
+    def seam_of(paint):
+        return ' stroke="%s"' % paint if seam > 0 else ""
+
+    # Fills. Back-to-back faces with the same plain color and name are drawn as one path.
+    pend = [None]
+
+    def flush():
+        p = pend[0]
+        if p:
+            fills.append('<path d="%s"%s fill="%s"%s data-name="%s"/>'
+                         % (p["d"], p["attrs"], p["paint"], seam_of(p["paint"]) if p["seamed"] else "", p["name"]))
+            pend[0] = None
+
+    def add_fill(d, paint, name, attrs="", merge=False, seamed=True):
+        p = pend[0]
+        if merge and p and p["merge"] and p["paint"] == paint and p["name"] == name:
+            p["d"] += d
             return
-        d = "".join("M" + pt(a) + "L" + pt(b) for a, b in lst)
-        out.append('<path class="e" d="%s" fill="none" stroke="%s" stroke-width="%s" stroke-linecap="round" stroke-linejoin="round"/>' % (d, edge_color, ew))
+        flush()
+        pend[0] = {"d": d, "paint": paint, "name": name, "attrs": attrs, "merge": merge, "seamed": seamed}
 
     def plane_fit(pts, us):
         n = len(pts)
@@ -1377,14 +1757,15 @@ def render(subs, fx_in, fill="#f2a541", opacity=1.0, id_prefix="v3d", pivot=None
                     % (gid, fmt(x1, 1), fmt(y1, 1), fmt(x2, 1), fmt(y2, 1), "".join(stops)))
         return gid
 
-    def smooth_face(st, d, pts, us):
+    def smooth_face(st, d, pts, us, pos):
         pl = plane_fit(pts, us)
         g = grad_plane(st, pl) if pl else None
+        c = ramp_color(st, quant(sum(us) / len(us), steps))
+        name = "Fill - %s - %s" % (cname(c), pos)
         if g:
-            out.append('<path d="%s" fill="url(#%s)"%s/>' % (d, g, stroke_for("url(#%s)" % g)))
+            add_fill(d, "url(#%s)" % g, name)
         else:
-            c = to_hex(ramp_color(st, quant(sum(us) / len(us), steps)))
-            out.append('<path d="%s" fill="%s"%s/>' % (d, c, stroke_for(c)))
+            add_fill(d, to_hex(c), name)
 
     # Shadows first (behind the object).
     if fx["shadow"] == "drop" and not wire:
@@ -1393,7 +1774,7 @@ def render(subs, fx_in, fill="#f2a541", opacity=1.0, id_prefix="v3d", pivot=None
         zp = min(p[2] for p in P) - max(0.0, fx["shadow_dist"])
         d = ""
         for f in mesh["faces"]:
-            n = m_apply(R, f["n"])
+            n = m_apply(Rn, f["n"])
             if not (v_dot(n, L) > 0 or f.get("ds")):
                 continue
             for l in f["loops"]:
@@ -1410,8 +1791,9 @@ def render(subs, fx_in, fill="#f2a541", opacity=1.0, id_prefix="v3d", pivot=None
             defs.append('<filter id="%ssh" x="-50%%" y="-50%%" width="200%%" height="200%%"><feGaussianBlur stdDeviation="%s"/></filter>'
                         % (id_prefix, fmt(fx["shadow_blur"], 1)))
             filt = ' filter="url(#%ssh)"' % id_prefix
-        out.append('<g opacity="%s"%s><path d="%s" fill="%s"/></g>'
-                   % (fmt(clamp(fx["shadow_opacity"], 0, 1), 2), filt, d, to_hex(parse_color(fx["shadow_color"], (0, 0, 0)))))
+        col = to_hex(parse_color(fx["shadow_color"], (0, 0, 0)))
+        shadow_mk = ('<g class="v3d-shadow" data-name="Shadow" opacity="%s"%s><path d="%s" fill="%s" data-name="Fill - %s - Cast Shadow"/></g>'
+                     % (fmt(clamp(fx["shadow_opacity"], 0, 1), 2), filt, d, col, cname(parse_color(col))))
     elif fx["shadow"] == "floor" and not wire:
         w = bbox[2] - bbox[0]
         rx, ry = w * 0.46, max(3.0, w * 0.07)
@@ -1420,8 +1802,8 @@ def render(subs, fx_in, fill="#f2a541", opacity=1.0, id_prefix="v3d", pivot=None
         col = to_hex(parse_color(fx["shadow_color"], (0, 0, 0)))
         defs.append('<radialGradient id="%sfl"><stop offset="0" stop-color="%s" stop-opacity="1"/><stop offset="1" stop-color="%s" stop-opacity="0"/></radialGradient>'
                     % (id_prefix, col, col))
-        out.append('<ellipse cx="%s" cy="%s" rx="%s" ry="%s" fill="url(#%sfl)" opacity="%s"/>'
-                   % (fmt(sx), fmt(sy), fmt(rx), fmt(ry), id_prefix, fmt(clamp(fx["shadow_opacity"] * 2, 0, 1), 2)))
+        shadow_mk = ('<g class="v3d-shadow" data-name="Shadow"><ellipse cx="%s" cy="%s" rx="%s" ry="%s" fill="url(#%sfl)" opacity="%s" data-name="Fill - %s - Floor Shadow"/></g>'
+                     % (fmt(sx), fmt(sy), fmt(rx), fmt(ry), id_prefix, fmt(clamp(fx["shadow_opacity"] * 2, 0, 1), 2), cname(parse_color(col))))
         add_bbox(sx - rx, sy + ry)
         add_bbox(sx + rx, sy + ry)
 
@@ -1431,50 +1813,52 @@ def render(subs, fx_in, fill="#f2a541", opacity=1.0, id_prefix="v3d", pivot=None
         if f.get("cap") and not v["flip"]:
             caps[f["cap"]].append(v)
             continue
-        st = mats.get(v["mat"], mats["side"])
+        face_count += 1
         if wire:
-            out.append('<path class="e" d="%s" fill="none" stroke="%s" stroke-width="%s" stroke-linejoin="round"/>' % (loop_d(f["loops"]), edge_color, ew))
-            face_count += 1
             continue
+        st = mats.get(v["mat"], mats["side"])
+        pos = pos_of(v)
         loop = f["loops"][0]
         if smooth and f.get("cn") and len(f["loops"]) == 1:
             us = []
             for i, cn in enumerate(f["cn"]):
-                nn = m_apply(R, cn)
+                nn = m_apply(Rn, cn)
                 if v["flip"]:
                     nn = v_scale(nn, -1)
                 us.append(shade(nn, v_norm(v_sub(cam, P[loop[i]])) if persp else v["V"], rig, mode))
             umin, umax = min(us), max(us)
             scr = [S[vi] for vi in loop]
             if umax - umin < 0.02:
-                c = to_hex(ramp_color(st, quant((umin + umax) / 2, steps)))
-                out.append('<path d="%s" fill="%s"%s/>' % (loop_d(f["loops"]), c, stroke_for(c)))
+                c = ramp_color(st, quant((umin + umax) / 2, steps))
+                add_fill(loop_d1(loop), to_hex(c), "Fill - %s - %s" % (cname(c), pos), "", True)
             else:
                 pl = plane_fit(scr, us) if len(scr) > 3 else None
                 if len(scr) == 3 or (pl and pl["res"] <= (0.012 if steps else 0.03)):
-                    smooth_face(st, loop_d(f["loops"]), scr, us)
+                    smooth_face(st, loop_d(f["loops"]), scr, us, pos)
                 else:
                     for i in range(1, len(scr) - 1):
                         smooth_face(st, "M%sL%sL%sZ" % (pt(loop[0]), pt(loop[i]), pt(loop[i + 1])),
-                                    [scr[0], scr[i], scr[i + 1]], [us[0], us[i], us[i + 1]])
+                                    [scr[0], scr[i], scr[i + 1]], [us[0], us[i], us[i + 1]], pos)
         else:
-            c = to_hex(ramp_color(st, quant(shade(v["n"], v["V"], rig, mode), steps)))
-            rule = ' fill-rule="evenodd"' if len(f["loops"]) > 1 else ""
-            out.append('<path d="%s"%s fill="%s"%s/>' % (loop_d(f["loops"]), rule, c, stroke_for(c)))
-        face_count += 1
-        emit_edges(v["fi"])
+            c = ramp_color(st, quant(shade(v["n"], v["V"], rig, mode), steps))
+            name = "Fill - %s - %s" % (cname(c), pos)
+            if len(f["loops"]) > 1:
+                add_fill(loop_d(f["loops"]), to_hex(c), name, ' fill-rule="evenodd"')
+            else:
+                add_fill(loop_d1(loop), to_hex(c), name, "", True)
 
     for side in ("back", "front"):
         lst = caps[side]
-        if not lst:
+        if not lst or wire:
             continue
         v0 = lst[0]
         st = mats.get(v0["mat"], mats["front"])
+        pos = pos_of(v0)
         if mesh.get("cap_exact") and geom["cap_subs"] and fx["kind"] != "revolve":
             z = mesh["cap_z"][0] if side == "front" else mesh["cap_z"][1]
 
             def pr(x, y):
-                q = project(m_apply(R, [x + off[0], y + off[1], z]))
+                q = project(place([x, y, z]))
                 return fmt(q[0], 2) + " " + fmt(q[1], 2)
 
             d = ""
@@ -1488,14 +1872,44 @@ def render(subs, fx_in, fill="#f2a541", opacity=1.0, id_prefix="v3d", pivot=None
                 d += "Z"
         else:
             d = "".join(loop_d(v["f"]["loops"]) for v in lst)
-        if wire:
-            out.append('<path class="e" d="%s" fill="none" stroke="%s" stroke-width="%s"/>' % (d, edge_color, ew))
-            continue
-        c = to_hex(ramp_color(st, quant(shade(v0["n"], v0["V"], rig, mode), steps)))
-        out.append('<path d="%s" fill-rule="evenodd" fill="%s"%s/>' % (d, c, stroke_for(c) if all_edges else ""))
+        c = ramp_color(st, quant(shade(v0["n"], v0["V"], rig, mode), steps))
+        add_fill(d, to_hex(c), "Fill - %s - %s" % (cname(c), pos), ' fill-rule="evenodd"', False, False)
         face_count += 1
-        for v in lst:
-            emit_edges(v["fi"])
+    flush()
 
-    return {"defs": defs, "body": "".join(out), "bbox": bbox, "faces": face_count,
-            "seam": seam if (seam > 0 and not all_edges) else 0, "opacity": opacity}
+    # Lines, on top of every fill, one path per name. Wireframes are see-through, so all their lines show.
+    lines_mk = ""
+    if line_edges:
+        segs = []
+        for e, owner in line_edges:
+            r = rank[owner]
+            a, b = S[e["a"]], S[e["b"]]
+            segs.append({"x0": a[0], "y0": a[1], "x1": b[0], "y1": b[1], "r": r,
+                         "adj": set(rank[fi] for fi in e["f"] if fi in rank), "name": line_name + pos_of(vis[r])})
+        if wire:
+            pieces = [(s["x0"], s["y0"], s["x1"], s["y1"], i) for i, s in enumerate(segs)]
+        else:
+            occ = [Occluder([[S[vi] for vi in l] for l in v["f"]["loops"]]) for v in vis]
+            eps = max(1e-3, math.hypot(bbox[2] - bbox[0], bbox[3] - bbox[1]) * 1e-4)
+            pieces = hide_lines(segs, occ, eps)
+        by_name = {}
+        order = []
+        for x0, y0, x1, y1, si in pieces:
+            a = fmt(x0, 1) + " " + fmt(y0, 1)
+            b = fmt(x1, 1) + " " + fmt(y1, 1)
+            if a == b:
+                continue
+            name = segs[si]["name"]
+            if name not in by_name:
+                by_name[name] = []
+                order.append(name)
+            by_name[name].append((a, b))
+        lines_mk = "".join('<path class="e" d="%s"%s data-name="%s"/>' % (chain_d(by_name[n]), line_attrs, n) for n in order)
+
+    seam_attr = ' stroke-width="%s" stroke-linejoin="round"' % fmt(seam, 2) if seam > 0 else ""
+    body = shadow_mk
+    if fills:
+        body += '<g class="v3d-fills" data-name="Fills"%s>%s</g>' % (seam_attr, "".join(fills))
+    if lines_mk:
+        body += '<g class="v3d-lines" data-name="Lines">%s</g>' % lines_mk
+    return {"defs": defs, "body": body, "bbox": bbox, "faces": face_count, "seam": 0, "opacity": opacity}

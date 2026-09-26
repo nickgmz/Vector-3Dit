@@ -11,6 +11,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -37,7 +38,9 @@ def test_parity():
         print("skip parity (node not found)")
         return
     keymap = {"bevelW": "bevel_w", "bevelH": "bevel_h", "bevelSides": "bevel_sides", "bevelOut": "bevel_out",
-              "revAxis": "rev_axis", "revAngle": "rev_angle", "infSides": "inf_sides", "infProfile": "inf_profile"}
+              "revAxis": "rev_axis", "revAngle": "rev_angle", "infSides": "inf_sides", "infProfile": "inf_profile",
+              "objRx": "obj_rx", "objRy": "obj_ry", "objPush": "obj_push", "sceneRadius": "scene_radius",
+              "nameColors": "name_colors"}
     effects = [
         {"kind": "extrude"},
         {"kind": "extrude", "bevel": "round", "bevelW": 6, "bevelH": 6, "bevelSides": "both"},
@@ -47,18 +50,30 @@ def test_parity():
         {"kind": "inflate"},
         {"kind": "inflate", "infSides": "front", "infProfile": "pillow", "shadow": "drop"},
         {"kind": "flat", "rx": 40, "ry": 20, "shading": "toon"},
+        {"kind": "extrude", "edges": "all", "shading": "flat", "nameColors": "cmyk"},
+        {"kind": "extrude", "shading": "wire"},
+        {"kind": "extrude", "edges": "outline", "persp": 50, "sceneRadius": 500, "objRx": 25, "objRy": -60, "objPush": 180},
     ]
     cases = [{"lib": lib, "fx": fx} for lib in ["heart", "star5", "ring", "vase", "cloud", "gear"] for fx in effects]
+    for c in cases:
+        if c["fx"].get("sceneRadius"):
+            c["pivot"] = [150, 260]
     js = json.loads(subprocess.run(["node", os.path.join(ROOT, "tests", "engine_parity.cjs")], input=json.dumps(cases),
                                    capture_output=True, text=True, check=True).stdout)
     bad = []
     for c, j in zip(cases, js):
         fx = E.defaults(c["fx"]["kind"], 200)
         fx.update({keymap.get(k, k): v for k, v in c["fx"].items()})
-        r = E.render(j["subs"], fx, fill="#e2574c")
+        r = E.render(j["subs"], fx, fill="#e2574c", pivot=c.get("pivot"))
         err = max(abs(a - b) for a, b in zip(r["bbox"], j["bbox"]))
-        if r["faces"] != j["faces"] or err > 0.5:
-            bad.append("%s %s: py %d faces, js %d, bbox err %.3f" % (c["lib"], c["fx"], r["faces"], j["faces"], err))
+        markup = r["body"]
+        names = sorted(set(re.findall(r'data-name="([^"]+)"', markup)))
+        lines = "".join(re.findall(r'<path class="e" d="[^"]*"', markup)).count("L")
+        if r["faces"] != j["faces"] or err > 0.5 or names != j["names"] or abs(lines - j["lines"]) > max(2, j["lines"] // 50):
+            bad.append("%s %s: py %d faces, js %d, bbox err %.3f, names %s, lines py %d js %d"
+                       % (c["lib"], c["fx"], r["faces"], j["faces"], err,
+                          "same" if names == j["names"] else "py-js %s js-py %s" % (sorted(set(names) - set(j["names"])), sorted(set(j["names"]) - set(names))),
+                          lines, j["lines"]))
     check(not bad, "engine parity with the web app (%d cases)" % len(cases), "; ".join(bad[:3]))
 
 
@@ -101,13 +116,31 @@ def test_extension():
     check(len(results) == 2, "two 3D results", str(len(results)))
     heart = doc.xpath("//*[@id='heart']", namespaces=ns)
     check(len(heart) == 1 and "v3d-source" in (heart[0].get("class") or ""), "original kept hidden inside the result")
-    faces = sum(len(r.xpath(".//svg:g[@class='v3d-faces']/*", namespaces=ns)) for r in results)
-    check(faces > 20, "faces drawn", str(faces))
+    faces = sum(len(r.xpath(".//svg:g[@class='v3d-fills']/*", namespaces=ns)) for r in results)
+    check(faces > 8, "faces drawn", str(faces))
     res_id = results[0].get("id")
+    check(res_id == "heart-3d", "the result gets a readable id", res_id)
+    label = "{http://www.inkscape.org/namespaces/inkscape}label"
+    parts = doc.xpath("//svg:g[@data-v3d]//svg:path[not(@class='v3d-source')]", namespaces=ns)
+    names = [el.get(label) or "" for el in parts]
+    check(parts and all(re.match(r"^(Fill|Line) - [A-Za-z0-9 ]+ - [A-Za-z ]+$", n) for n in names),
+          "every part is named like \"Fill - Red - Front\"", str(sorted(set(names))[:6]))
+    check(any(n.endswith(" - Front") for n in names) and any(re.search(r" - (Top|Bottom|Left Side|Right Side)$", n) for n in names),
+          "parts are named for where they sit on the object", str(sorted(set(names))))
+    ids = doc.xpath("//@id")
+    check(len(ids) == len(set(ids)) and not doc.xpath("//*[@data-name]"), "part ids are unique and readable",
+          str([i for i in ids if "fill" in i][:3]))
 
-    p = run_ext(["--kind=inflate", "--material=toon", "--id=" + res_id], out1, out2)
+    p = run_ext(["--kind=inflate", "--material=toon", "--edges=outline", "--name_colors=cmyk", "--id=" + res_id], out1, out2)
     check(p.returncode == 0, "re-edit runs", p.stderr[-500:])
     doc = etree.parse(out2)
+    res = doc.xpath("//*[@id='%s']" % res_id, namespaces=ns)[0]
+    groups = [g.get(label) for g in res.xpath("svg:g", namespaces=ns)]
+    check(groups[-2:] == ["Fills", "Lines"], "fills and lines are separate groups, lines on top", str(groups))
+    line_names = res.xpath("svg:g[@class='v3d-lines']/svg:path/@inkscape:label",
+                           namespaces=dict(ns, inkscape="http://www.inkscape.org/namespaces/inkscape"))
+    check(line_names and all(re.match(r"^Line - C\d+ M\d+ Y\d+ K\d+ - ", n) for n in line_names),
+          "lines are named, with CMYK codes when asked", str(line_names[:3]))
     check(len(doc.xpath("//svg:g[@data-v3d]", namespaces=ns)) == 2, "re-edit replaces instead of stacking")
     settings = json.loads(doc.xpath("//*[@id='%s']" % res_id, namespaces=ns)[0].get("data-v3d"))
     check(settings.get("kind") == "inflate", "re-edit stores the new settings", str(settings.get("kind")))
@@ -240,6 +273,22 @@ def test_editor_window():
           and all(f.get("camera") is None for f in left) and all(abs(f["rx"] - cam["rx"]) < 1e-6 for f in left),
           "deleting a camera unlocks its objects and leaves them as they are")
 
+    # Inside a camera: turn and push back one object without moving the camera or the other objects.
+    c5 = os.path.join(tmp, "c5.svg")
+    heart_id = [g.get("id") for g in etree.parse(c3).xpath("//svg:g[@data-v3d]", namespaces=ns)
+                if g.find("{http://www.w3.org/2000/svg}path[@id='heart']") is not None][0]
+    p = run_window({"set": {"turn_mode": "object", "obj_push": 150}, "drag_after": [[60, 0]], "apply": True}, ["--id=" + heart_id], c3, c5)
+    doc = etree.parse(c5)
+    placed = {g.get("id"): json.loads(g.get("data-v3d")) for g in doc.xpath("//svg:g[@data-v3d]", namespaces=ns)}
+    cam5 = json.loads(doc.getroot().get("data-v3d-cameras"))["Street"]
+    h = placed[heart_id]
+    others = [f for k, f in placed.items() if k != heart_id]
+    check(p.returncode == 0 and abs(h.get("obj_ry", 0)) > 5 and abs(h.get("obj_push", 0) - 150 / 3.7795) < 1e-3
+          and cam5 == cam and all(abs(f["ry"] - cam["ry"]) < 1e-6 and not f.get("obj_ry") for f in others)
+          and abs(h["ry"] - cam["ry"]) < 1e-6 and "turn_mode" not in h,
+          "turn and push back one object inside its scene without moving the camera",
+          p.stderr[-300:] or str({k: h.get(k) for k in ("obj_ry", "obj_push", "ry")}))
+
     # Shared scene light: changing the light on one object relights every 3D object; switched off, only the selection.
     box_id = [k for k in results if k != res_id][0]
     out6, out7 = os.path.join(tmp, "6.svg"), os.path.join(tmp, "7.svg")
@@ -260,9 +309,9 @@ def test_editor_window():
     doc = etree.parse(out8)
     member = [g for g in doc.xpath("//svg:g[@data-v3d]", namespaces=ns) if "pivot_offset" in g.get("data-v3d")]
     check(p.returncode == 0 and len(member) == 2, "group members remember the group's turning point")
-    before = member[0].xpath(".//svg:g[@class='v3d-faces']/svg:path/@d", namespaces=ns)[:3]
+    before = member[0].xpath(".//svg:g[@class='v3d-fills']/svg:path/@d", namespaces=ns)[:3]
     p = run_window({"set": {"steps": 0}, "apply": True}, ["--id=" + member[0].get("id")], out8, out9)
-    after = etree.parse(out9).xpath("//*[@id='%s']//svg:g[@class='v3d-faces']/svg:path/@d" % member[0].get("id"), namespaces=ns)[:3]
+    after = etree.parse(out9).xpath("//*[@id='%s']//svg:g[@class='v3d-fills']/svg:path/@d" % member[0].get("id"), namespaces=ns)[:3]
     check(p.returncode == 0 and before and before == after, "editing one group member alone keeps it in place")
 
     rx = heart.get("rx")

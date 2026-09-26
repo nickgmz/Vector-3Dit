@@ -1,3 +1,5 @@
+<img src="vector3dit_logo.png" alt="Vector 3Dit logo" width="72" align="right">
+
 # Vector 3Dit for Inkscape
 
 The Vector 3Dit 3D effects as an Inkscape extension. Select shapes in Inkscape and **extrude**, **revolve**,
@@ -17,7 +19,7 @@ Requires **Inkscape 1.2 or newer**. Nothing else to install: Inkscape brings its
    - macOS: `~/Library/Application Support/org.inkscape.Inkscape/config/inkscape/extensions`
    - Linux: `~/.config/inkscape/extensions` (Flatpak: `~/.var/app/org.inkscape.Inkscape/config/inkscape/extensions`; Snap: `~/snap/inkscape/current/.config/inkscape/extensions`)
 2. Make a folder named `vector3dit` inside it and copy these files into that folder:
-   - `vector3dit.py`, `vector3dit_engine.py`, `vector3dit_view.py`
+   - `vector3dit.py`, `vector3dit_engine.py`, `vector3dit_view.py`, `vector3dit_logo.png`
    - `vector3dit_extrude.inx`, `vector3dit_revolve.inx`, `vector3dit_inflate.inx`, `vector3dit_flat.inx`, `vector3dit_editor.inx`, `vector3dit_remove.inx`
 
    The `.inx` files and the `.py` files must sit in the same folder. It's fine to put them straight into `extensions` without the subfolder.
@@ -49,13 +51,13 @@ The **Flat / Extrude / Revolve / Inflate** buttons sit at the top, and tabs belo
 
 | Tab | What's in it |
 | --- | --- |
-| **View** | The trackball: drag the cube to turn the objects (**Shift** locks one axis, **Alt** spins them flat, arrow keys turn in 5° steps). Tilt, Turn, Spin and Perspective sliders, **Face front**, and 12 preset views. You can also drag in the preview itself. **Camera:** save the view as a named camera and lock objects to it, so a whole scene shares one vantage point (angles, turning point and perspective); turning one locked object turns them all. |
-| **Shape** | Settings for the current kind. Extrude: depth, solid or hollow, the bevel picker (None, Classic, Round, Cove, Ogee, Step, Chisel), bevel size, front or both sides, inward or outward, smoothness. Revolve: axis, angle, offset, segments, cut-end caps. Inflate: puffiness, profile, roundness, sides, detail. |
+| **View** | The trackball: drag the cube to turn the objects (**Shift** locks one axis, **Alt** spins them flat, arrow keys turn in 5° steps). Tilt, Turn, Spin and Perspective sliders, **Face front**, and 12 preset views. You can also drag in the preview itself. **Camera:** save the view as a named camera and lock objects to it, so a whole scene shares one vantage point (angles, turning point and perspective); turning the scene camera turns them all. **Turn: This object** turns just the selection inside the scene, and **Push back** (−1000 to 1000 px) moves it deeper into the scene, so you can line objects up without redoing the scene. |
+| **Shape** | Settings for the current kind. Extrude: depth (up to 1000 px), solid or hollow, the bevel picker (None, Classic, Round, Cove, Ogee, Step, Chisel), bevel size, front or both sides, inward or outward, smoothness. Revolve: axis, angle, offset, segments, cut-end caps. Inflate: puffiness (up to 1000 px), profile, roundness, sides, detail. |
 | **Surface** | Material swatches (Glossy, Clay, Toon, Poster, Chrome, Gold, Copper, Line art, Wireframe, Flat color), shading, smooth gradients, color bands, smoothing angle. |
 | **Colors** | Front, sides, bevel and back colors (Auto follows the front), shadow tone (tinted, black or custom) and highlight color. |
 | **Light** | **Shared scene light** (on: every 3D object in the drawing gets this light), the light sphere (drag the sun), intensity, ambient, fill light, highlight and gloss. |
 | **Outline** | Edge lines (none, outline, all) with color, width and crease angle; a shadow cast onto the page or a floor shadow, with opacity, softness, distance and color. |
-| **Style** | The object's **fill**, **stroke** (color or None, width, and whether it draws the outline or every edge) and **opacity**. A 3D object's stroke is its outline; a shape that already has a stroke keeps it when it's made 3D, and the stroke is saved on the shape, so Remove 3D gives it back. |
+| **Style** | The object's **fill**, **stroke** (color or None, width, and whether it draws the outline or every edge) and **opacity**. A 3D object's stroke is its outline; a shape that already has a stroke keeps it when it's made 3D, and the stroke is saved on the shape, so Remove 3D gives it back. **Names:** name the parts' colors with color names or CMYK codes. |
 
 Color buttons open the web app's color picker (color square, hue, hex code and palette) inside the window.
 Controls that don't apply are hidden, as in the web app. For example, the bevel settings only show when a bevel is picked.
@@ -86,7 +88,19 @@ Lengths are in px (1/96 in) and are converted to your document's units.
 - **Undo it:** **Extensions › Vector 3Dit › Remove 3D** puts the original flat shape back, with its id and style.
 - **Edit the shape:** remove the 3D, edit the path, then apply the effect again.
 
-Each result is a group named `3D <effect>: <shape>`. It holds the faces and a hidden copy of the original shape.
+Each result is a group named `3D <effect>: <shape>` (for example **3D Extrude: Heart**, id `heart-3d`). Inside it, in drawing order:
+
+- a hidden copy of the original shape (`v3d-source`),
+- **Shadow**: the cast or floor shadow, if any,
+- **Fills**: the faces,
+- **Lines**: the edge lines, on top of every fill. A line is hidden only where a face really covers it.
+
+Every part is named for what it is, its color and where it sits on the object: **Fill - Light Blue - Front**,
+**Fill - Dark Blue - Left Side**, **Fill - Blue - Front Bevel**… and **Line - Black - Front**. Colors get a basic name (Blue,
+Light Blue, Dark Gray…) or, when no basic name fits or you pick CMYK codes on the Style tab, a code like **C75 M49 Y0 K5**.
+The names show in **Object › Layers and Objects**, and the ids follow them (`heart-3d-fill-light-blue-front`).
+Faces side by side with the same color and name are joined into one path.
+
 To make the art fully independent, ungroup it and delete the hidden `v3d-source` path. After that it can't be re-edited.
 
 ### Tips
@@ -104,6 +118,7 @@ To make the art fully independent, ungroup it and delete the hidden `v3d-source`
 | `vector3dit.py` | The Inkscape extension: reads the selection, runs the engine and writes the result group |
 | `vector3dit_engine.py` | The 3D engine: mesh builders (extrude/bevel, lathe, inflate), lighting and SVG output. Pure Python, no dependencies |
 | `vector3dit_view.py` | The 3D Editor window (GTK 3): trackball, sliders and a live preview of the engine's SVG output, shown through GTK's SVG image loader (no cairo bindings needed) |
+| `vector3dit_logo.png` | The Vector 3Dit logo, shown in the 3D Editor's title bar and window icon |
 | `vector3dit_*.inx` | The dialogs. Generated by `build_inx.py`, so edit that script and rerun it rather than editing the `.inx` files |
 
 Tests (from the repository root): `python3 tests/inkscape.test.py`. They check that the Python engine matches the web app's engine

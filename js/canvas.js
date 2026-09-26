@@ -264,7 +264,31 @@
         prev = el;
       }
       for (const el of existing.values()) el.remove();
+      this.applyFade();
       return stats;
+    }
+
+    /**
+     * While 3D objects are edited, the rest of the drawing shows faded (or hidden), like the preview of the
+     * Inkscape extension's 3D Editor. Objects inside a group fade on their own, so the group isn't dimmed twice.
+     */
+    applyFade() {
+      const app = this.app;
+      const layer = this.docLayer;
+      for (const el of Array.from(layer.querySelectorAll('.v3d-faded, .v3d-hidden'))) el.classList.remove('v3d-faded', 'v3d-hidden');
+      const focus = app.fadeFocus ? app.fadeFocus() : null;
+      if (!focus) return;
+      const cls = app.prefs.otherObjects ? 'v3d-faded' : 'v3d-hidden';
+      const keep = new Set();
+      for (const el of Array.from(layer.querySelectorAll('g[data-id]'))) {
+        if (!focus.has(el.getAttribute('data-id'))) continue;
+        for (let p = el; p && p !== layer; p = p.parentNode) if (p.hasAttribute && p.hasAttribute('data-id')) keep.add(p);
+      }
+      for (const el of Array.from(layer.querySelectorAll('g[data-id]'))) {
+        if (keep.has(el)) continue;
+        const up = el.parentNode.closest('g[data-id]');
+        if (!up || keep.has(up)) el.classList.add(cls);
+      }
     }
 
     /** Fast visual translation of top-level objects during a drag. */

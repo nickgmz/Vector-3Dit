@@ -75,6 +75,12 @@
       shadowBlur: 6,
       shadowDist: 40,
       shadowColor: '#10121a',
+      // Placement inside a scene camera: the object's own turn and how far it is pushed back.
+      objRx: 0,
+      objRy: 0,
+      objRz: 0,
+      objPush: 0,
+      nameColors: 'names',
     };
   };
 
@@ -367,11 +373,335 @@
     return (b + 0.5) * bw;
   };
 
+  /* ---------------- names ---------------- */
+  // Every output path is named "Fill - Light Blue - Front" or "Line - Black - Top": what it is, its color
+  // and where it sits on the object, so the result is easy to find your way around in a layers panel.
+  const HUE_NAMES = [
+    [12, 'Red'],
+    [40, 'Orange'],
+    [66, 'Yellow'],
+    [160, 'Green'],
+    [190, 'Cyan'],
+    [250, 'Blue'],
+    [285, 'Purple'],
+    [330, 'Magenta'],
+    [361, 'Red'],
+  ];
+
+  /** CMYK code of a color, like "C80 M40 Y0 K10". */
+  // Names use the color as drawn: each channel rounded to a whole 0-255 value.
+  const unit = (v) => Math.floor(clamp(v, 0, 255) + 0.5) / 255;
+  R3D.cmykCode = (c) => {
+    const r = unit(c.r);
+    const g = unit(c.g);
+    const b = unit(c.b);
+    const k = 1 - Math.max(r, g, b);
+    const d = 1 - k || 1;
+    const p = (v) => Math.floor(Math.max(0, v) * 100 + 0.5);
+    return `C${p((1 - r - k) / d)} M${p((1 - g - k) / d)} Y${p((1 - b - k) / d)} K${p(k)}`;
+  };
+
+  /** A basic color name ("Light Blue", "Dark Gray"), or the CMYK code when no basic name fits or mode is 'cmyk'. */
+  R3D.colorName = (c, mode) => {
+    if (!c) return 'None';
+    if (mode === 'cmyk') return R3D.cmykCode(c);
+    const r = unit(c.r);
+    const g = unit(c.g);
+    const b = unit(c.b);
+    const mx = Math.max(r, g, b);
+    const mn = Math.min(r, g, b);
+    const ch = mx - mn;
+    const l = (mx + mn) / 2;
+    const s = ch < 1e-9 ? 0 : ch / (1 - Math.abs(2 * l - 1));
+    if (l < 0.07) return 'Black';
+    if (l > 0.96) return 'White';
+    if (s < 0.1 || ch < 0.06) return l < 0.16 ? 'Black' : l < 0.38 ? 'Dark Gray' : l < 0.64 ? 'Gray' : l < 0.88 ? 'Light Gray' : 'White';
+    if (s < 0.2 && ch < 0.12) return R3D.cmykCode(c); // a muted, grayish color: no basic name fits
+    let h = mx === r ? (g - b) / ch : mx === g ? (b - r) / ch + 2 : (r - g) / ch + 4;
+    h = (h * 60 + 360) % 360;
+    const hue = HUE_NAMES.find((e) => h < e[0])[1];
+    if (hue === 'Orange' && (l < 0.42 || (s < 0.4 && l < 0.6))) return l < 0.22 ? 'Dark Brown' : 'Brown';
+    if ((hue === 'Orange' || hue === 'Yellow') && s < 0.5 && l > 0.55) return l > 0.8 ? 'Beige' : 'Tan';
+    if (hue === 'Yellow' && l < 0.36) return 'Olive';
+    if ((hue === 'Red' || hue === 'Magenta') && l > 0.72) return l > 0.86 ? 'Light Pink' : 'Pink';
+    if (hue === 'Blue' && l < 0.2) return 'Navy';
+    if (hue === 'Cyan' && l < 0.36) return 'Teal';
+    if (hue === 'Magenta' && l < 0.3) return 'Purple';
+    return (l < 0.28 ? 'Dark ' : l > 0.72 ? 'Light ' : '') + hue;
+  };
+
+  /** Where a face sits on the object, from its own (unturned) normal: Front, Top, Left Side… */
+  R3D.facePosition = (f, flip, kind) => {
+    if (flip) return kind === 'flat' ? 'Back' : 'Inside';
+    if (f.cap) return f.cap === 'back' ? 'Back' : 'Front';
+    if (kind === 'revolve' && f.mat === 'front') return 'Cut End';
+    if (f.mat === 'bevel') return f.c[2] >= 0 ? 'Front Bevel' : 'Back Bevel';
+    const [x, y, z] = f.n;
+    if (Math.abs(z) >= 0.75) return z > 0 ? 'Front' : 'Back';
+    if (Math.abs(x) < 1e-6 && Math.abs(y) < 1e-6) return 'Side';
+    if (Math.abs(y) >= Math.abs(x)) return y > 0 ? 'Top' : 'Bottom';
+    return x > 0 ? 'Right Side' : 'Left Side';
+  };
+
+  /* ---------------- hidden lines ---------------- */
+  // Lines are drawn above every fill, so each one is first cut back to the parts that no fill painted
+  // after its own face covers. Faces and long outlines are found through grids so big meshes stay fast.
+  const BIG_POLY = 24;
+
+  /** An occluding face: loops of flat [x, y, …] screen points. */
+  function occluder(loops) {
+    let n = 0;
+    for (const L of loops) n += L.length / 2;
+    const E = new Float64Array(n * 4);
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    let k = 0;
+    for (const L of loops)
+      for (let i = 0, j = L.length - 2; i < L.length; j = i, i += 2) {
+        E[k++] = L[j];
+        E[k++] = L[j + 1];
+        E[k++] = L[i];
+        E[k++] = L[i + 1];
+        if (L[i] < x0) x0 = L[i];
+        if (L[i] > x1) x1 = L[i];
+        if (L[i + 1] < y0) y0 = L[i + 1];
+        if (L[i + 1] > y1) y1 = L[i + 1];
+      }
+    return { E, n, x0, y0, x1, y1, grid: null };
+  }
+
+  /** Edge grid for a big face; every edge is listed in each cell within eps of it. */
+  function edgeGrid(o, eps) {
+    const G = Math.max(2, Math.min(64, Math.ceil(Math.sqrt(o.n / 2))));
+    const cw = (o.x1 - o.x0) / G || 1;
+    const ch = (o.y1 - o.y0) / G || 1;
+    const cells = [];
+    for (let i = 0; i < G * G; i++) cells.push([]);
+    const cx = (x) => Math.min(G - 1, Math.max(0, Math.floor((x - o.x0) / cw)));
+    const cy = (y) => Math.min(G - 1, Math.max(0, Math.floor((y - o.y0) / ch)));
+    const E = o.E;
+    for (let e = 0; e < o.n; e++) {
+      const ax = E[e * 4];
+      const ay = E[e * 4 + 1];
+      const bx = E[e * 4 + 2];
+      const by = E[e * 4 + 3];
+      const i1 = cx(Math.max(ax, bx) + eps);
+      const j1 = cy(Math.max(ay, by) + eps);
+      for (let j = cy(Math.min(ay, by) - eps); j <= j1; j++) for (let i = cx(Math.min(ax, bx) - eps); i <= i1; i++) cells[j * G + i].push(e);
+    }
+    o.grid = { G, cells, cx, cy, stamp: new Int32Array(o.n).fill(-1), tick: 0 };
+  }
+
+  /** Calls fn(edge) once for each edge of o that may lie in the box. */
+  function edgesNear(o, x0, y0, x1, y1, fn) {
+    const g = o.grid;
+    if (!g) {
+      for (let e = 0; e < o.n; e++) fn(e);
+      return;
+    }
+    const t = ++g.tick;
+    const i1 = g.cx(x1);
+    const j1 = g.cy(y1);
+    for (let j = g.cy(y0); j <= j1; j++)
+      for (let i = g.cx(x0); i <= i1; i++)
+        for (const e of g.cells[j * g.G + i])
+          if (g.stamp[e] !== t) {
+            g.stamp[e] = t;
+            fn(e);
+          }
+  }
+
+  /**
+   * True when (px, py) is inside face o (even-odd), unless it lies on an edge of o that runs along the
+   * line's direction (ux, uy): a line along a face's outline stays visible.
+   */
+  function insideDeep(o, px, py, eps, ux, uy) {
+    if (px < o.x0 || px > o.x1 || py < o.y0 || py > o.y1) return false;
+    const E = o.E;
+    const e2 = eps * eps;
+    let inside = false;
+    let along = false;
+    const test = (e) => {
+      const ax = E[e * 4];
+      const ay = E[e * 4 + 1];
+      const bx = E[e * 4 + 2];
+      const by = E[e * 4 + 3];
+      if (ay > py !== by > py && px < ax + ((py - ay) * (bx - ax)) / (by - ay)) inside = !inside;
+      const ex = bx - ax;
+      const ey = by - ay;
+      const l2 = ex * ex + ey * ey;
+      if (l2 < 1e-18) return;
+      let t = ((px - ax) * ex + (py - ay) * ey) / l2;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const qx = ax + ex * t - px;
+      const qy = ay + ey * t - py;
+      if (qx * qx + qy * qy < e2 && Math.abs(ex * uy - ey * ux) < 0.02 * Math.sqrt(l2)) along = true;
+    };
+    const g = o.grid;
+    if (!g) {
+      for (let e = 0; e < o.n && !along; e++) test(e);
+      return inside && !along;
+    }
+    // Only edges in this row, from here rightwards, can cross the ray; the point's own cell holds every near edge.
+    const t = ++g.tick;
+    const j = g.cy(py);
+    for (let i = g.cx(px); i < g.G; i++)
+      for (const e of g.cells[j * g.G + i])
+        if (g.stamp[e] !== t) {
+          g.stamp[e] = t;
+          test(e);
+          if (along) return false;
+        }
+    return inside;
+  }
+
+  /** Adds to cov the parts of segment (x0, y0)→(x1, y1), as [t0, t1] ranges, that lie well inside face o. */
+  function coverBy(o, x0, y0, x1, y1, eps, cov) {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const ts = [0, 1];
+    const E = o.E;
+    edgesNear(o, Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1), (e) => {
+      const ax = E[e * 4];
+      const ay = E[e * 4 + 1];
+      const ex = E[e * 4 + 2] - ax;
+      const ey = E[e * 4 + 3] - ay;
+      const den = dx * ey - dy * ex;
+      if (Math.abs(den) < 1e-12) return;
+      const t = ((ax - x0) * ey - (ay - y0) * ex) / den;
+      const u = ((ax - x0) * dy - (ay - y0) * dx) / den;
+      if (t > 0 && t < 1 && u >= 0 && u <= 1) ts.push(t);
+    });
+    ts.sort((a, b) => a - b);
+    const len = Math.hypot(dx, dy) || 1;
+    for (let k = 0; k + 1 < ts.length; k++) {
+      const a = ts[k];
+      const b = ts[k + 1];
+      if (b - a < 1e-9) continue;
+      const m = (a + b) / 2;
+      if (insideDeep(o, x0 + dx * m, y0 + dy * m, eps, dx / len, dy / len)) cov.push([a, b]);
+    }
+  }
+
+  /**
+   * Hidden-line removal. segs: [{x0, y0, x1, y1, r, adj}] where r is the draw rank of the segment's face and
+   * adj the ranks of the faces it borders; faces: occluders by draw rank (null for none).
+   * Returns the visible pieces as [x0, y0, x1, y1, segment index].
+   */
+  R3D.hideLines = (segs, faces, eps) => {
+    let gx0 = Infinity;
+    let gy0 = Infinity;
+    let gx1 = -Infinity;
+    let gy1 = -Infinity;
+    for (const o of faces)
+      if (o) {
+        gx0 = Math.min(gx0, o.x0);
+        gy0 = Math.min(gy0, o.y0);
+        gx1 = Math.max(gx1, o.x1);
+        gy1 = Math.max(gy1, o.y1);
+      }
+    const out = [];
+    const G = Math.max(1, Math.min(64, Math.round(Math.sqrt(faces.length / 3))));
+    const cw = (gx1 - gx0) / G || 1;
+    const ch = (gy1 - gy0) / G || 1;
+    const cx = (x) => Math.min(G - 1, Math.max(0, Math.floor((x - gx0) / cw)));
+    const cy = (y) => Math.min(G - 1, Math.max(0, Math.floor((y - gy0) / ch)));
+    const cells = [];
+    for (let i = 0; i < G * G; i++) cells.push([]);
+    faces.forEach((o, r) => {
+      if (!o) return;
+      if (o.n > BIG_POLY) edgeGrid(o, eps);
+      const i1 = cx(o.x1);
+      const j1 = cy(o.y1);
+      for (let j = cy(o.y0); j <= j1; j++) for (let i = cx(o.x0); i <= i1; i++) cells[j * G + i].push(r);
+    });
+    const seen = new Int32Array(faces.length).fill(-1);
+    segs.forEach((s, si) => {
+      const sx0 = Math.min(s.x0, s.x1) - eps;
+      const sy0 = Math.min(s.y0, s.y1) - eps;
+      const sx1 = Math.max(s.x0, s.x1) + eps;
+      const sy1 = Math.max(s.y0, s.y1) + eps;
+      const cov = [];
+      let full = false;
+      if (gx1 >= gx0 && sx1 >= gx0 && sx0 <= gx1 && sy1 >= gy0 && sy0 <= gy1) {
+        const i1 = cx(sx1);
+        const j1 = cy(sy1);
+        for (let j = cy(sy0); j <= j1 && !full; j++)
+          for (let i = cx(sx0); i <= i1 && !full; i++)
+            for (const r of cells[j * G + i]) {
+              if (seen[r] === si) continue;
+              seen[r] = si;
+              if (r <= s.r || s.adj.includes(r)) continue;
+              const o = faces[r];
+              if (o.x1 < sx0 || o.x0 > sx1 || o.y1 < sy0 || o.y0 > sy1) continue;
+              const n0 = cov.length;
+              coverBy(o, s.x0, s.y0, s.x1, s.y1, eps, cov);
+              for (let k = n0; k < cov.length; k++) if (cov[k][0] <= 0 && cov[k][1] >= 1) full = true;
+              if (full) break;
+            }
+      }
+      if (full) return;
+      cov.sort((a, b) => a[0] - b[0]);
+      const len = Math.hypot(s.x1 - s.x0, s.y1 - s.y0) || 1;
+      const minT = eps / len;
+      let t = 0;
+      const piece = (a, b) => {
+        if (b - a > minT) out.push([s.x0 + (s.x1 - s.x0) * a, s.y0 + (s.y1 - s.y0) * a, s.x0 + (s.x1 - s.x0) * b, s.y0 + (s.y1 - s.y0) * b, si]);
+      };
+      for (const [a, b] of cov) {
+        if (a > t) piece(t, a);
+        if (b > t) t = b;
+      }
+      if (t < 1) piece(t, 1);
+    });
+    return out;
+  };
+
+  /** Joins line pieces [a, b] (point strings) that meet end to end into one path "d". */
+  function chainD(pieces) {
+    const at = new Map();
+    pieces.forEach((p, i) => {
+      for (const k of [p[0], p[1]]) {
+        const l = at.get(k);
+        if (l) l.push(i);
+        else at.set(k, [i]);
+      }
+    });
+    const used = new Uint8Array(pieces.length);
+    const next = (pt) => {
+      const l = at.get(pt);
+      if (l) for (const i of l) if (!used[i]) return i;
+      return -1;
+    };
+    let d = '';
+    for (let i = 0; i < pieces.length; i++) {
+      if (used[i]) continue;
+      used[i] = 1;
+      const run = [pieces[i][0], pieces[i][1]];
+      // Grow forward from the end, then backward from the start.
+      for (let end = run[1], j = next(end); j >= 0; j = next(end)) {
+        used[j] = 1;
+        end = pieces[j][0] === end ? pieces[j][1] : pieces[j][0];
+        run.push(end);
+      }
+      for (let start = run[0], j = next(start); j >= 0; j = next(start)) {
+        used[j] = 1;
+        start = pieces[j][0] === start ? pieces[j][1] : pieces[j][0];
+        run.unshift(start);
+      }
+      d += 'M' + run.join('L');
+    }
+    return d;
+  }
+
   /* ---------------- rendering ---------------- */
   /**
    * subs: world-space subpaths; fx: 3D settings; style: {fill, opacity}; scene: {light, seam}
-   * opts: { id, quality: 'full'|'draft' }
-   * Returns { markup, bbox, faces, ms }.
+   * opts: { id, quality: 'full'|'draft', pivot }
+   * Returns { markup, bbox, faces, ms }. The markup is one group holding, in drawing order, a "Shadow",
+   * a "Fills" and a "Lines" group; every path has a data-name like "Fill - Light Blue - Front".
    */
   R3D.render = (subs, fxIn, style, scene, opts = {}) => {
     const t0 = globalThis.performance ? performance.now() : Date.now();
@@ -386,14 +716,24 @@
     const [gcx, gcy] = geom.center;
     const [cx, cy] = opts.pivot || geom.center;
     const off = [gcx - cx, cy - gcy, 0];
-    const hasOff = Math.abs(off[0]) > 1e-9 || Math.abs(off[1]) > 1e-9;
     const R = M3.fromEuler(fx.rx || 0, fx.ry || 0, fx.rz || 0);
+    // In a scene camera an object can also turn on its own and move back or forward, leaving the camera as it is.
+    const turned = fx.objRx || fx.objRy || fx.objRz;
+    const Rn = turned ? M3.mul(R, M3.fromEuler(fx.objRx || 0, fx.objRy || 0, fx.objRz || 0)) : R;
+    const push = fx.objPush || 0;
+    const T = M3.apply(R, [off[0], off[1], -push]);
+    const place = (v) => {
+      const p = M3.apply(Rn, v);
+      return [p[0] + T[0], p[1] + T[1], p[2] + T[2]];
+    };
     const fov = clamp(fx.persp || 0, 0, 160);
     const persp = fov > 0.5;
     // A shared scene camera fixes the camera distance, so every object linked to it gets the same perspective.
-    const radius = fx.sceneRadius > 0 ? fx.sceneRadius : mesh.radius + Math.hypot(off[0], off[1]);
+    const radius = fx.sceneRadius > 0 ? fx.sceneRadius : mesh.radius + Math.sqrt(off[0] * off[0] + off[1] * off[1] + push * push);
     const dist = persp ? radius * (1.1 + 1 / Math.tan(((fov / 2) * Math.PI) / 180)) : Infinity;
     const cam = [0, 0, dist];
+    // Points pulled up to the camera are held just in front of it instead of flipping behind it.
+    const kOf = (z) => (persp ? dist / Math.max(dist * 0.1, dist - z) : 1);
 
     // Transform + project vertices.
     const nV = mesh.verts.length;
@@ -401,16 +741,15 @@
     const S = new Float64Array(nV * 2);
     const bbox = V3D.Rect.empty();
     for (let i = 0; i < nV; i++) {
-      const v = mesh.verts[i];
-      const p = M3.apply(R, hasOff ? [v[0] + off[0], v[1] + off[1], v[2]] : v);
+      const p = place(mesh.verts[i]);
       P[i] = p;
-      const k = persp ? dist / Math.max(1e-6, dist - p[2]) : 1;
+      const k = kOf(p[2]);
       S[i * 2] = cx + p[0] * k;
       S[i * 2 + 1] = cy - p[1] * k;
       V3D.Rect.addPoint(bbox, S[i * 2], S[i * 2 + 1]);
     }
     const project = (p) => {
-      const k = persp ? dist / Math.max(1e-6, dist - p[2]) : 1;
+      const k = kOf(p[2]);
       return [cx + p[0] * k, cy - p[1] * k];
     };
 
@@ -438,8 +777,8 @@
     // Visibility, orientation and depth per face.
     const vis = [];
     mesh.faces.forEach((f, fi) => {
-      const n = M3.apply(R, f.n);
-      const c = M3.apply(R, hasOff ? [f.c[0] + off[0], f.c[1] + off[1], f.c[2]] : f.c);
+      const n = M3.apply(Rn, f.n);
+      const c = place(f.c);
       const V = viewDir(c);
       const facing = V3.dot(n, V) > 0;
       let flip = false;
@@ -456,9 +795,20 @@
     const rank = new Int32Array(mesh.faces.length).fill(-1);
     vis.forEach((v, i) => (rank[v.fi] = i));
 
-    // Feature edges attached to the face drawn last.
-    const faceEdges = new Map();
-    if (edgesMode === 'outline' && !wire) {
+    const nameMode = fx.nameColors === 'cmyk' ? 'cmyk' : 'names';
+    const cname = (c) => R3D.colorName(c, nameMode);
+    const posOf = (v) => R3D.facePosition(v.f, v.flip, fx.kind);
+
+    // Which mesh edges become lines, each owned by the neighbouring face drawn last.
+    const allEdges = edgesMode === 'all' || wire;
+    const lineEdges = [];
+    if (allEdges) {
+      for (const e of mesh.edges) {
+        let owner = -1;
+        for (const fi of e.f) if (rank[fi] >= 0 && (owner < 0 || rank[fi] > rank[owner])) owner = fi;
+        if (owner >= 0) lineEdges.push(e, owner);
+      }
+    } else if (edgesMode === 'outline') {
       const cosC = Math.cos(((fx.creaseAngle == null ? 40 : fx.creaseAngle) * Math.PI) / 180);
       for (const e of mesh.edges) {
         const vf = e.f.filter((fi) => rank[fi] >= 0);
@@ -470,34 +820,59 @@
           const b = vis[rank[vf[1]]];
           if (V3.dot(a.n, b.n) < cosC) owner = rank[vf[0]] > rank[vf[1]] ? vf[0] : vf[1];
         }
-        if (owner < 0) continue;
-        (faceEdges.get(owner) || faceEdges.set(owner, []).get(owner)).push(e.a, e.b);
+        if (owner >= 0) lineEdges.push(e, owner);
       }
     }
+    // Quick drafts draw each line right after its face; finished renders put every line on top, cut back
+    // where a fill really covers it. Wireframes are see-through, so all their lines show.
+    const inline = draft && !wire;
+    const faceEdges = new Map();
+    if (inline)
+      for (let i = 0; i < lineEdges.length; i += 2) (faceEdges.get(lineEdges[i + 1]) || faceEdges.set(lineEdges[i + 1], []).get(lineEdges[i + 1])).push(lineEdges[i]);
 
     const seam = scene && scene.seam != null ? scene.seam : 1;
     const edgeColor = Color.normalize(fx.edgeColor, '#1b1c22');
     const ew = fmt(fx.edgeWidth == null ? 1.5 : fx.edgeWidth, 2);
-    const allEdges = edgesMode === 'all' || wire;
-    const out = [];
+    const lineName = 'Line - ' + cname(Color.parse(edgeColor)) + ' - ';
+    const lineAttrs = ` fill="none" stroke="${edgeColor}" stroke-width="${ew}" stroke-linecap="round" stroke-linejoin="round"`;
+    const fills = [];
     const defs = [];
+    let shadowMk = '';
     let gid = 0;
     let faceCount = 0;
     const pt = (i) => fmt(S[i * 2], 1) + ' ' + fmt(S[i * 2 + 1], 1);
     const loopD = (loops) => loops.map((l) => 'M' + l.map(pt).join('L') + 'Z').join('');
+    /** One loop, always wound the same way on screen, so merged faces never cancel each other out. */
+    const loopD1 = (l) => {
+      let a = 0;
+      for (let i = 0, j = l.length - 1; i < l.length; j = i++) a += S[l[j] * 2] * S[l[i] * 2 + 1] - S[l[i] * 2] * S[l[j] * 2 + 1];
+      return 'M' + (a < 0 ? l.slice().reverse() : l).map(pt).join('L') + 'Z';
+    };
     const hex = (c) => Color.toHex(c);
-    const strokeFor = (color) =>
-      allEdges
-        ? ` class="e" stroke="${edgeColor}" stroke-width="${ew}" stroke-linejoin="round"`
-        : seam > 0
-          ? ` stroke="${color}"`
-          : '';
+    const seamOf = (paint) => (seam > 0 ? ` stroke="${paint}"` : '');
+
+    // Fills. Back-to-back faces with the same plain color and name are drawn as one path.
+    let pend = null;
+    const flush = () => {
+      if (!pend) return;
+      fills.push(`<path d="${pend.d}"${pend.attrs} fill="${pend.paint}"${pend.seamed ? seamOf(pend.paint) : ''} data-name="${pend.name}"/>`);
+      pend = null;
+    };
+    const addFill = (d, paint, name, attrs = '', merge = false, seamed = true) => {
+      if (merge && pend && pend.merge && pend.paint === paint && pend.name === name) {
+        pend.d += d;
+        return;
+      }
+      flush();
+      pend = { d, paint, name, attrs, merge, seamed };
+    };
     const emitEdges = (fi) => {
       const list = faceEdges.get(fi);
       if (!list) return;
+      flush();
       let d = '';
-      for (let i = 0; i < list.length; i += 2) d += 'M' + pt(list[i]) + 'L' + pt(list[i + 1]);
-      out.push(`<path class="e" d="${d}" fill="none" stroke="${edgeColor}" stroke-width="${ew}" stroke-linecap="round" stroke-linejoin="round"/>`);
+      for (const e of list) d += 'M' + pt(e.a) + 'L' + pt(e.b);
+      fills.push(`<path class="e" d="${d}"${lineAttrs}/>`);
     };
 
     /** Least-squares plane u = u0 + gx·(x−px) + gy·(y−py) through screen points; exact for triangles. */
@@ -576,14 +951,13 @@
       defs.push(`<linearGradient id="${gidS}" gradientUnits="userSpaceOnUse" x1="${fmt(x1, 1)}" y1="${fmt(y1, 1)}" x2="${fmt(x2, 1)}" y2="${fmt(y2, 1)}">${stops.join('')}</linearGradient>`);
       return gidS;
     };
-    const smoothFace = (st, d, pts, us) => {
+    const smoothFace = (st, d, pts, us, pos) => {
       const pl = planeFit(pts, us);
       const g = pl && gradPlane(st, pl);
-      if (g) out.push(`<path d="${d}" fill="url(#${g})"${strokeFor(`url(#${g})`)}/>`);
-      else {
-        const c = hex(rampColor(st, quant(us.reduce((a, b) => a + b, 0) / us.length, steps)));
-        out.push(`<path d="${d}" fill="${c}"${strokeFor(c)}/>`);
-      }
+      const c = rampColor(st, quant(us.reduce((a, b) => a + b, 0) / us.length, steps));
+      const name = 'Fill - ' + cname(c) + ' - ' + pos;
+      if (g) addFill(d, `url(#${g})`, name);
+      else addFill(d, hex(c), name);
     };
 
     // Cast shadow on a backdrop plane behind the object.
@@ -595,7 +969,7 @@
       const zp = zmin - Math.max(0, fx.shadowDist || 0);
       let d = '';
       for (const f of mesh.faces) {
-        const n = M3.apply(R, f.n);
+        const n = M3.apply(Rn, f.n);
         const lit = V3.dot(n, L);
         if (!(lit > 0 || f.ds)) continue;
         for (const l of f.loops) {
@@ -616,15 +990,17 @@
         defs.push(`<filter id="${id}sh" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="${fmt(blur, 1)}"/></filter>`);
         filt = ` filter="url(#${id}sh)"`;
       }
-      out.push(`<g opacity="${fmt(clamp(fx.shadowOpacity, 0, 1), 2)}"${filt}><path d="${d}" fill="${Color.normalize(fx.shadowColor, '#000000')}"/></g>`);
+      const col = Color.normalize(fx.shadowColor, '#000000');
+      shadowMk = `<g class="v3d-shadow" data-name="Shadow" opacity="${fmt(clamp(fx.shadowOpacity, 0, 1), 2)}"${filt}><path d="${d}" fill="${col}" data-name="Fill - ${cname(Color.parse(col))} - Cast Shadow"/></g>`;
     } else if (fx.shadow === 'floor' && !wire) {
       const w = V3D.Rect.w(bbox);
       const rx = w * 0.46;
       const ry = Math.max(3, w * 0.07);
       const sx = V3D.Rect.cx(bbox) - rig.L[0] * w * 0.12;
       const sy = bbox.y2 + ry * 0.2;
-      defs.push(`<radialGradient id="${id}fl"><stop offset="0" stop-color="${Color.normalize(fx.shadowColor, '#000000')}" stop-opacity="1"/><stop offset="1" stop-color="${Color.normalize(fx.shadowColor, '#000000')}" stop-opacity="0"/></radialGradient>`);
-      out.push(`<ellipse cx="${fmt(sx)}" cy="${fmt(sy)}" rx="${fmt(rx)}" ry="${fmt(ry)}" fill="url(#${id}fl)" opacity="${fmt(clamp(fx.shadowOpacity * 2, 0, 1), 2)}"/>`);
+      const col = Color.normalize(fx.shadowColor, '#000000');
+      defs.push(`<radialGradient id="${id}fl"><stop offset="0" stop-color="${col}" stop-opacity="1"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></radialGradient>`);
+      shadowMk = `<g class="v3d-shadow" data-name="Shadow"><ellipse cx="${fmt(sx)}" cy="${fmt(sy)}" rx="${fmt(rx)}" ry="${fmt(ry)}" fill="url(#${id}fl)" opacity="${fmt(clamp(fx.shadowOpacity * 2, 0, 1), 2)}" data-name="Fill - ${cname(Color.parse(col))} - Floor Shadow"/></g>`;
       V3D.Rect.addPoint(bbox, sx - rx, sy + ry);
       V3D.Rect.addPoint(bbox, sx + rx, sy + ry);
     }
@@ -637,16 +1013,14 @@
         caps[f.cap].push(v);
         continue;
       }
+      faceCount++;
+      if (wire) continue;
       const st = mats[v.mat] || mats.side;
-      if (wire) {
-        out.push(`<path class="e" d="${loopD(f.loops)}" fill="none" stroke="${edgeColor}" stroke-width="${ew}" stroke-linejoin="round"/>`);
-        faceCount++;
-        continue;
-      }
+      const pos = posOf(v);
       const loop = f.loops[0];
       if (smooth && f.cn && f.loops.length === 1) {
         const us = f.cn.map((cn, i) => {
-          const n = M3.apply(R, cn);
+          const n = M3.apply(Rn, cn);
           const nn = v.flip ? V3.scale(n, -1) : n;
           return shade(nn, persp ? V3.norm(V3.sub(cam, P[loop[i]])) : v.V, rig, mode);
         });
@@ -654,35 +1028,36 @@
         const umax = Math.max(...us);
         const scr = loop.map((vi) => [S[vi * 2], S[vi * 2 + 1]]);
         if (umax - umin < 0.02) {
-          const c = hex(rampColor(st, quant((umin + umax) / 2, steps)));
-          out.push(`<path d="${loopD(f.loops)}" fill="${c}"${strokeFor(c)}/>`);
+          const c = rampColor(st, quant((umin + umax) / 2, steps));
+          addFill(loopD1(loop), hex(c), 'Fill - ' + cname(c) + ' - ' + pos, '', true);
         } else {
           // One gradient for the whole face when its shading is (nearly) planar, else a fan of exact triangles.
           const pl = scr.length > 3 ? planeFit(scr, us) : null;
-          if (scr.length === 3 || (pl && pl.maxRes <= (steps ? 0.012 : 0.03))) smoothFace(st, loopD(f.loops), scr, us);
+          if (scr.length === 3 || (pl && pl.maxRes <= (steps ? 0.012 : 0.03))) smoothFace(st, loopD(f.loops), scr, us, pos);
           else
             for (let i = 1; i < scr.length - 1; i++)
-              smoothFace(st, `M${pt(loop[0])}L${pt(loop[i])}L${pt(loop[i + 1])}Z`, [scr[0], scr[i], scr[i + 1]], [us[0], us[i], us[i + 1]]);
+              smoothFace(st, `M${pt(loop[0])}L${pt(loop[i])}L${pt(loop[i + 1])}Z`, [scr[0], scr[i], scr[i + 1]], [us[0], us[i], us[i + 1]], pos);
         }
       } else {
-        const u = quant(shade(v.n, v.V, rig, mode), steps);
-        const c = hex(rampColor(st, u));
-        out.push(`<path d="${loopD(f.loops)}"${f.loops.length > 1 ? ' fill-rule="evenodd"' : ''} fill="${c}"${strokeFor(c)}/>`);
+        const c = rampColor(st, quant(shade(v.n, v.V, rig, mode), steps));
+        const name = 'Fill - ' + cname(c) + ' - ' + pos;
+        if (f.loops.length > 1) addFill(loopD(f.loops), hex(c), name, ' fill-rule="evenodd"');
+        else addFill(loopD1(loop), hex(c), name, '', true);
       }
-      faceCount++;
-      emitEdges(v.fi);
+      if (inline) emitEdges(v.fi);
     }
 
     for (const side of ['back', 'front']) {
       const list = caps[side];
-      if (!list.length) continue;
+      if (!list.length || wire) continue;
       const v0 = list[0];
       const st = mats[v0.mat] || mats.front;
+      const pos = posOf(v0);
       let d;
       if (mesh.capExact && geom.capSubs.length && fx.kind !== 'revolve') {
         const z = side === 'front' ? mesh.capZ[0] : mesh.capZ[1];
         const pr = (x, y) => {
-          const q = project(M3.apply(R, [x + off[0], y + off[1], z]));
+          const q = project(place([x, y, z]));
           return fmt(q[0], 2) + ' ' + fmt(q[1], 2);
         };
         d = '';
@@ -698,27 +1073,71 @@
           d += 'Z';
         }
       } else d = list.map((v) => loopD(v.f.loops)).join('');
-      if (wire) {
-        out.push(`<path class="e" d="${d}" fill="none" stroke="${edgeColor}" stroke-width="${ew}"/>`);
-        continue;
-      }
       const u = quant(shade(v0.n, v0.V, rig, mode), steps);
-      const c = hex(rampColor(st, u));
-      const grad = side === 'front' && !lineart && style && style.fill && typeof style.fill === 'object' ? capGradient(style.fill, geom, R, project, fx, id, defs, side === 'front' ? mesh.capZ[0] : 0, off) : null;
+      const c = rampColor(st, u);
+      const grad = side === 'front' && !lineart && style && style.fill && typeof style.fill === 'object' ? capGradient(style.fill, geom, place, project, id, defs, mesh.capZ[0]) : null;
       if (grad) {
-        out.push(`<path d="${d}" fill-rule="evenodd" fill="url(#${grad})"/>`);
+        addFill(d, `url(#${grad})`, 'Fill - ' + cname(Color.parse(solidOf(style.fill))) + ' - ' + pos, ' fill-rule="evenodd"', false, false);
         // Shade the gradient face with a translucent overlay.
         const shadeDelta = u - 1;
-        if (Math.abs(shadeDelta) > 0.02 && mode !== 'flat')
-          out.push(`<path d="${d}" fill-rule="evenodd" fill="${shadeDelta < 0 ? '#000' : '#fff'}" fill-opacity="${fmt(Math.min(0.7, Math.abs(shadeDelta) * 0.6), 3)}"/>`);
-      } else out.push(`<path d="${d}" fill-rule="evenodd" fill="${c}"${allEdges ? strokeFor(c) : ''}/>`);
+        if (Math.abs(shadeDelta) > 0.02 && mode !== 'flat') {
+          flush();
+          fills.push(
+            `<path d="${d}" fill-rule="evenodd" fill="${shadeDelta < 0 ? '#000' : '#fff'}" fill-opacity="${fmt(Math.min(0.7, Math.abs(shadeDelta) * 0.6), 3)}" data-name="Fill - ${shadeDelta < 0 ? 'Black' : 'White'} - ${pos} Shading"/>`
+          );
+        }
+      } else addFill(d, hex(c), 'Fill - ' + cname(c) + ' - ' + pos, ' fill-rule="evenodd"', false, false);
       faceCount++;
-      for (const v of list) emitEdges(v.fi);
+      if (inline) for (const v of list) emitEdges(v.fi);
+    }
+    flush();
+
+    // Lines, on top of every fill, one path per name.
+    let linesMk = '';
+    if (!inline && lineEdges.length) {
+      const segs = [];
+      for (let i = 0; i < lineEdges.length; i += 2) {
+        const e = lineEdges[i];
+        const r = rank[lineEdges[i + 1]];
+        const adj = [];
+        for (const fi of e.f) if (rank[fi] >= 0) adj.push(rank[fi]);
+        segs.push({ x0: S[e.a * 2], y0: S[e.a * 2 + 1], x1: S[e.b * 2], y1: S[e.b * 2 + 1], r, adj, name: lineName + posOf(vis[r]) });
+      }
+      let pieces;
+      if (wire) pieces = segs.map((s, i) => [s.x0, s.y0, s.x1, s.y1, i]);
+      else {
+        const flat = (l) => {
+          const a = new Float64Array(l.length * 2);
+          l.forEach((vi, i) => {
+            a[i * 2] = S[vi * 2];
+            a[i * 2 + 1] = S[vi * 2 + 1];
+          });
+          return a;
+        };
+        const occ = vis.map((v) => occluder(v.f.loops.map(flat)));
+        const eps = Math.max(1e-3, Math.hypot(V3D.Rect.w(bbox), V3D.Rect.h(bbox)) * 1e-4);
+        pieces = R3D.hideLines(segs, occ, eps);
+      }
+      const byName = new Map();
+      for (const p of pieces) {
+        const a = fmt(p[0], 1) + ' ' + fmt(p[1], 1);
+        const b = fmt(p[2], 1) + ' ' + fmt(p[3], 1);
+        if (a === b) continue;
+        const name = segs[p[4]].name;
+        const l = byName.get(name);
+        if (l) l.push([a, b]);
+        else byName.set(name, [[a, b]]);
+      }
+      for (const [name, list] of byName) linesMk += `<path class="e" d="${chainD(list)}"${lineAttrs} data-name="${name}"/>`;
     }
 
     const opacity = style && style.opacity != null && style.opacity < 1 ? ` opacity="${fmt(style.opacity, 3)}"` : '';
-    const seamAttr = seam > 0 && !allEdges ? ` stroke-width="${fmt(seam, 2)}" stroke-linejoin="round"` : '';
-    const markup = `<g class="obj3d"${opacity}${seamAttr}>${defs.length ? '<defs>' + defs.join('') + '</defs>' : ''}${out.join('')}</g>`;
+    const seamAttr = seam > 0 ? ` stroke-width="${fmt(seam, 2)}" stroke-linejoin="round"` : '';
+    const markup =
+      `<g class="obj3d"${opacity}>${defs.length ? '<defs>' + defs.join('') + '</defs>' : ''}${shadowMk}` +
+      (fills.length ? `<g class="v3d-fills" data-name="Fills"${seamAttr}>${fills.join('')}</g>` : '') +
+      (linesMk ? `<g class="v3d-lines" data-name="Lines">${linesMk}</g>` : '') +
+      '</g>';
     const t1 = globalThis.performance ? performance.now() : Date.now();
     return { markup, bbox: V3D.Rect.valid(bbox) ? bbox : null, faces: faceCount, ms: t1 - t0 };
   };
@@ -745,11 +1164,11 @@
   R3D.solidOf = solidOf;
 
   /** Maps a 2D gradient fill onto the projected front cap (exact in orthographic views). */
-  function capGradient(fill, geom, R, project, fx, id, defs, z, off) {
+  function capGradient(fill, geom, place, project, id, defs, z) {
     const bb = geom.bbox;
     const [cx, cy] = geom.center;
     // Doc → screen affine for points on the cap plane.
-    const map = (x, y) => project(M3.apply(R, [x - cx + off[0], cy - y + off[1], z]));
+    const map = (x, y) => project(place([x - cx, cy - y, z]));
     const o = map(0, 0);
     const ex = map(1, 0);
     const ey = map(0, 1);

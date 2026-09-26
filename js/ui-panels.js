@@ -37,7 +37,24 @@
     h('div.empty', h('div.empty-ico', { html: V3D.icon(icon) }), h('div.empty-title', title), h('p.empty-text', text), extra);
 
   /* =============================== 3D =============================== */
+  // The same tabs, in the same order, as the 3D Editor of the Inkscape extension.
+  const FX_TABS = [
+    ['view', 'View', 'orbit'],
+    ['shape', 'Shape', 'cube'],
+    ['surface', 'Surface', 'sparkle'],
+    ['colors', 'Colors', 'palette'],
+    ['light', 'Light', 'light'],
+    ['outline', 'Outline', 'shadow'],
+    ['style', 'Style', 'sliders'],
+  ];
+  const TURN_TIPS = ['Rotate around the horizontal axis (X)', 'Rotate around the vertical axis (Y)', 'Rotate within the drawing plane (Z)'];
+
   class Panel3D extends Panel {
+    constructor(app) {
+      super(app);
+      this.fxTab = V3D.U.storage.get('vector3dit.fxtab', 'view');
+      if (!FX_TABS.some((t) => t[0] === this.fxTab)) this.fxTab = 'view';
+    }
     target() {
       const objs = this.app.fxTargets(true);
       return objs.length ? objs[objs.length - 1] : null;
@@ -52,7 +69,24 @@
       const f = t && t.fx;
       const shapes = a.fxTargets().length;
       const lbl = !f && a.primary() ? Doc.label(a.primary()) : '';
-      return [a.sel.join(','), shapes, lbl, f ? [f.kind, f.useSceneLight !== false, f.shading, f.edges, f.shadow, f.bevel !== 'none', f.shadowTint === 'auto' || f.shadowTint === 'black' ? f.shadowTint : 'c', f.revAngle >= 360].join('|') : 'none'].join('#');
+      const view = f
+        ? [
+            this.fxTab,
+            f.kind,
+            f.useSceneLight !== false,
+            f.shading,
+            f.edges,
+            f.shadow,
+            f.bevel !== 'none',
+            f.shadowTint === 'auto' || f.shadowTint === 'black' ? f.shadowTint : 'c',
+            f.revAngle >= 360,
+            a.lockedCamera(),
+            Object.keys(a.doc.scene.cameras || {}).join('/'),
+            a.placementShown(t),
+            a.turnMode,
+          ].join('|')
+        : 'none';
+      return [a.sel.join(','), shapes, lbl, view].join('#');
     }
     build() {
       const app = this.app;
@@ -90,7 +124,7 @@
           )
         )
       );
-      this.el.append(this.lightSection(true));
+      this.el.append(W.section('scenelight', 'Scene light', this.lightKids(true)));
     }
     buildChooser(shapes) {
       const app = this.app;
@@ -120,20 +154,16 @@
     buildEditor(t) {
       const app = this.app;
       const fx = () => this.fx() || R3D.defaults();
-      const set = (prop) => (v, final) => app.setFx(prop, v, final);
       const add = this.add.bind(this);
-      const f = fx();
 
-      // Header: kind switcher.
+      // Header: the object and the kind switcher, above the tabs.
       const kind = add(
         W.segmented({
           label: '3D effect',
           cls: 'kinds',
           options: ['flat', 'extrude', 'revolve', 'inflate'].map((k) => ({ value: k, label: R3D.kinds[k].name, icon: k, title: R3D.kinds[k].hint })),
           get: () => fx().kind,
-          set: (v) => {
-            app.setFxMany({ kind: v }, R3D.kinds[v].name);
-          },
+          set: (v) => app.setFxMany({ kind: v }, R3D.kinds[v].name),
         })
       );
       const count = app.fxTargets(true).length;
@@ -141,119 +171,220 @@
         h('div.fx-head', h('div.fx-title', h('span', { html: V3D.icon('cube') }), h('span', count > 1 ? `${count} 3D shapes` : Doc.label(t))), W.iconButton('close', 'Remove 3D', () => app.remove3D(), 'danger')),
         kind
       );
-      if (count > 1 || app.parentOf(t.id))
-        this.el.append(
-          h(
-            'div.fx-group',
+
+      // Tabs, one group of tools each.
+      const bar = h('div.fx-tabs', { role: 'tablist', 'aria-label': '3D settings' });
+      for (const [id, label, icon] of FX_TABS) {
+        const b = h('button.fx-tab' + (id === this.fxTab ? '.on' : ''), { type: 'button', role: 'tab', 'aria-selected': String(id === this.fxTab) }, h('span', { html: V3D.icon(icon) }), h('span', label));
+        b.addEventListener('click', () => {
+          if (this.fxTab === id) return;
+          this.fxTab = id;
+          V3D.U.storage.set('vector3dit.fxtab', id);
+          this.update(true);
+          if (this.el.parentNode) this.el.parentNode.scrollTop = 0;
+        });
+        bar.append(b);
+      }
+      const page = h('div.fx-page', { role: 'tabpanel' });
+      const kids = { view: this.tabView, shape: this.tabShape, surface: this.tabSurface, colors: this.tabColors, light: this.tabLight, outline: this.tabOutline, style: this.tabStyle }[this.fxTab].call(this, t);
+      page.append(...kids.filter(Boolean));
+      this.el.append(bar, page);
+
+      this.el.append(
+        h(
+          'div.fx-actions',
+          W.button({ icon: 'expand', label: 'Expand to paths', title: 'Turn the 3D result into plain editable vector shapes, named like “Fill - Light Blue - Front”', onClick: () => app.expand3D() }),
+          W.button({ icon: 'copy', label: 'Copy style', title: 'Copy these 3D settings', onClick: () => app.copy3D() }),
+          W.button({ icon: 'sparkle', label: 'Paste style', title: 'Apply copied 3D settings to the selection', onClick: () => app.paste3D() })
+        )
+      );
+      this.statsEl = h('p.fx-stats.muted');
+      this.el.append(this.statsEl);
+      this.updateStats();
+    }
+
+    /* ---- View: camera, rotation, perspective, preset views ---- */
+    tabView(t) {
+      const app = this.app;
+      const add = this.add.bind(this);
+      const out = [];
+      const cams = Object.keys(app.doc.scene.cameras || {}).sort();
+      const locked = app.lockedCamera();
+      const camSel = add(
+        W.select({
+          bare: true,
+          label: 'Camera',
+          options: [{ value: '', label: 'Own view (not locked)' }].concat(cams.map((n) => ({ value: n, label: 'Locked: ' + n }))),
+          get: () => app.lockedCamera(),
+          set: (v) => app.useCamera(v),
+        })
+      );
+      camSel.title = 'Lock the selected objects to a saved camera, so they share one vantage point';
+      const save = W.button({ label: 'Save…', cls: 'small', title: 'Save the current view as a camera and lock the selected objects to it', onClick: () => this.saveCameraPopover(save) });
+      const del = locked ? W.button({ label: 'Delete', cls: 'small ghost', title: 'Delete this camera. Objects locked to it keep their current look.', onClick: () => app.deleteCamera() }) : null;
+      out.push(W.row('Camera', h('div.cam-ctl', camSel, h('div.cam-btns', save, del))));
+      if (locked)
+        out.push(h('p.tip', `Locked to the camera “${locked}”. Every object locked to it is seen from the same point, with the same angles and perspective. Turning the scene camera turns them all; pick This object to turn or push back only the selection.`));
+      if (app.fxTargets(true).length > 1 || app.parentOf(t.id))
+        out.push(
+          add(
+            W.toggle({
+              label: 'Turn together as one object',
+              title: 'On: every shape rotates around the group’s centre. Off: each shape spins around its own centre.',
+              get: () => !!(this.fx() && this.fx().pivot),
+              set: (v) => app.groupRotate(v),
+            })
+          )
+        );
+      const placement = app.placementShown(t);
+      if (placement)
+        out.push(
+          W.row(
+            'Turn',
             add(
-              W.toggle({
-                label: 'Turn together as one object',
-                title: 'On: every shape rotates around the group’s centre. Off: each shape spins around its own centre.',
-                get: () => !!(this.fx() && this.fx().pivot),
-                set: (v) => app.groupRotate(v),
+              W.segmented({
+                options: [
+                  { value: 'camera', label: 'Scene camera', title: 'Turn the camera: every object locked to it turns along' },
+                  { value: 'object', label: 'This object', title: 'Turn only the selected objects, inside the scene' },
+                ],
+                get: () => app.turnMode,
+                set: (v) => app.setTurnMode(v),
               })
             )
           )
         );
-
-      // View.
-      const tb = add(
-        W.trackball({
-          get: () => [fx().rx, fx().ry, fx().rz],
-          set: (r, final) => {
-            const objs = app.fxTargets(true);
-            objs.forEach((o) => {
-              o.fx.rx = r[0];
-              o.fx.ry = r[1];
-              o.fx.rz = r[2];
-              app.touch(o);
-            });
-            if (final) app.setDraft(null);
-            else app.setDraft(objs.map((o) => o.id));
-            app.requestRender();
-            if (final) app.commit('Rotate in 3D');
-            app.bus.emit('fx');
-          },
-        })
+      const turn = () => {
+        const o = this.target();
+        return o ? app.getTurn(app.turnTarget(o)) : [0, 0, 0];
+      };
+      const tb = add(W.trackball({ get: turn, set: (r, final) => app.turnSelection(r, final) }));
+      out.push(
+        h(
+          'div.tb-row',
+          tb,
+          h(
+            'div.tb-side',
+            h('p.muted.small', 'Drag the cube to turn the object. Shift locks one axis, Alt spins it flat.'),
+            W.button({ label: 'Face front', cls: 'small', icon: 'rotCCW', title: 'Reset rotation', onClick: () => app.turnSelection([0, 0, 0], true, 'Reset rotation') })
+          )
+        )
       );
+      ['Tilt', 'Turn', 'Spin'].forEach((label, i) =>
+        out.push(
+          add(
+            W.slider({
+              label,
+              axis: 'xyz'[i],
+              title: TURN_TIPS[i],
+              min: -180,
+              max: 180,
+              step: 1,
+              unit: '°',
+              def: 0,
+              get: () => turn()[i],
+              set: (v, final) => {
+                const r = turn();
+                r[i] = v;
+                app.turnSelection(r, final);
+              },
+            })
+          )
+        )
+      );
+      out.push(
+        add(
+          W.slider({
+            label: 'Perspective',
+            min: 0,
+            max: 160,
+            step: 1,
+            unit: '°',
+            def: 0,
+            title: 'Camera field of view. 0 = no perspective (parallel lines stay parallel).',
+            get: () => app.perspective(),
+            set: (v, final) => app.setPerspective(v, final),
+          })
+        )
+      );
+      if (placement)
+        out.push(
+          add(
+            W.slider({
+              label: 'Push back',
+              min: -1000,
+              max: 1000,
+              step: 1,
+              unit: 'px',
+              def: 0,
+              title: 'Move the selected objects deeper into the scene (below 0: toward you), without moving the camera. It shows with Perspective above 0.',
+              get: () => this.fx().objPush || 0,
+              set: (v, final) => app.setFx('objPush', v, final),
+            })
+          )
+        );
       const presets = h(
         'div.presets',
         R3D.presets.map((p) =>
           h(
             'button.preset',
-            {
-              type: 'button',
-              title: p.name,
-              onclick: () => app.setFxMany({ rx: p.r[0], ry: p.r[1], rz: p.r[2] }, 'View: ' + p.name),
-            },
+            { type: 'button', title: p.name, onclick: () => app.turnSelection(p.r.slice(), true, 'View: ' + p.name) },
             h('span.preset-thumb'),
             h('span.preset-name', p.name)
           )
         )
       );
       paintPresetThumbs(presets);
-      const rot = ['rx', 'ry', 'rz'].map((k, i) =>
-        add(
-          W.slider({
-            label: ['Tilt', 'Turn', 'Spin'][i],
-            axis: 'xyz'[i],
-            title: ['Rotate around the horizontal axis (X)', 'Rotate around the vertical axis (Y)', 'Rotate within the drawing plane (Z)'][i],
-            min: -180,
-            max: 180,
-            step: 1,
-            unit: '°',
-            def: 0,
-            get: () => fx()[k],
-            set: set(k),
-          })
-        )
-      );
-      const persp = add(W.slider({ label: 'Perspective', min: 0, max: 160, step: 1, unit: '°', def: 0, title: 'Camera field of view. 0 = no perspective (parallel lines stay parallel).', get: () => fx().persp, set: set('persp') }));
-      this.el.append(
-        W.section('view', 'View & rotation', [
-          h(
-            'div.tb-row',
-            tb,
-            h(
-              'div.tb-side',
-              h('p.muted.small', 'Drag the cube to turn the object. Shift locks one axis, Alt spins it flat.'),
-              W.button({ label: 'Face front', cls: 'small', icon: 'rotCCW', title: 'Reset rotation', onClick: () => app.setFxMany({ rx: 0, ry: 0, rz: 0 }, 'Reset rotation') })
-            )
-          ),
-          rot,
-          persp,
-          h('div.sub-label', 'Preset views'),
-          presets,
-        ])
-      );
+      out.push(h('div.sub-label', 'Preset views'), presets);
+      return out;
+    }
+    saveCameraPopover(anchor) {
+      const app = this.app;
+      const name = h('input.text', { type: 'text', placeholder: 'Camera name, e.g. Street view', 'aria-label': 'Camera name', maxlength: 60 });
+      const around = h('select.select', { 'aria-label': 'Turn everything around' }, h('option', { value: 'page' }, 'The page’s center'), h('option', { value: 'selection' }, 'The selection’s center'));
+      const ok = W.button({
+        label: 'Save camera',
+        primary: true,
+        onClick: () => {
+          const n = name.value.trim();
+          if (!n) return name.focus();
+          W.closePopover();
+          app.saveCamera(n, around.value);
+        },
+      });
+      name.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') ok.click();
+      });
+      W.popover(anchor, h('div.cam-pop', h('div.cp-title', 'Save as camera'), name, h('div.sub-label', 'Turn everything around'), around, ok), { label: 'Save as camera' });
+      setTimeout(() => name.focus());
+    }
 
-      // Shape.
-      const shapeKids = [];
+    /* ---- Shape: the settings of the current kind ---- */
+    tabShape() {
+      const app = this.app;
+      const fx = () => this.fx();
+      const set = (prop) => (v, final) => app.setFx(prop, v, final);
+      const add = this.add.bind(this);
+      const f = fx();
+      const out = [];
       if (f.kind === 'extrude') {
-        shapeKids.push(add(W.slider({ label: 'Depth', min: 0, max: 400, step: 1, unit: 'px', hardMin: 0, get: () => fx().depth, set: set('depth') })));
-        shapeKids.push(add(W.toggle({ label: 'Solid (end caps)', title: 'Turn off for a hollow tube', get: () => fx().caps !== false, set: set('caps') })));
-        const bev = add(W.bevelPicker({ get: () => fx().bevel, set: (v) => app.setFxMany({ bevel: v }, 'Bevel') }));
-        shapeKids.push(W.row('Bevel', bev));
+        out.push(add(W.slider({ label: 'Depth', min: 0, max: 1000, step: 1, unit: 'px', hardMin: 0, get: () => fx().depth, set: set('depth') })));
+        out.push(add(W.toggle({ label: 'Solid (end caps)', title: 'Turn off for a hollow tube', get: () => fx().caps !== false, set: set('caps') })));
+        out.push(W.row('Bevel', add(W.bevelPicker({ get: () => fx().bevel, set: (v) => app.setFxMany({ bevel: v }, 'Bevel') }))));
         if (f.bevel !== 'none') {
-          shapeKids.push(add(W.slider({ label: 'Bevel width', min: 0, max: 60, step: 0.5, unit: 'px', hardMin: 0, get: () => fx().bevelW, set: set('bevelW') })));
-          shapeKids.push(add(W.slider({ label: 'Bevel height', min: 0, max: 60, step: 0.5, unit: 'px', hardMin: 0, get: () => fx().bevelH, set: set('bevelH') })));
-          shapeKids.push(
-            W.row(
-              'Bevel on',
-              add(W.segmented({ options: [{ value: 'front', label: 'Front' }, { value: 'both', label: 'Front & back' }], get: () => fx().bevelSides, set: set('bevelSides') }))
-            )
-          );
-          shapeKids.push(
+          out.push(add(W.slider({ label: 'Bevel width', min: 0, max: 60, step: 0.5, unit: 'px', hardMin: 0, get: () => fx().bevelW, set: set('bevelW') })));
+          out.push(add(W.slider({ label: 'Bevel height', min: 0, max: 60, step: 0.5, unit: 'px', hardMin: 0, get: () => fx().bevelH, set: set('bevelH') })));
+          out.push(W.row('Bevel on', add(W.segmented({ options: [{ value: 'front', label: 'Front' }, { value: 'both', label: 'Front & back' }], get: () => fx().bevelSides, set: set('bevelSides') }))));
+          out.push(
             W.row(
               'Direction',
               add(W.segmented({ options: [{ value: false, label: 'Inward', title: 'Carve the bevel into the shape' }, { value: true, label: 'Outward', title: 'Grow the bevel outside the shape' }], get: () => !!fx().bevelOut, set: set('bevelOut') }))
             )
           );
-          shapeKids.push(add(W.slider({ label: 'Smoothness', min: 1, max: 12, step: 1, get: () => fx().bevelSegs, set: set('bevelSegs') })));
+          out.push(add(W.slider({ label: 'Smoothness', min: 1, max: 12, step: 1, get: () => fx().bevelSegs, set: set('bevelSegs') })));
         }
       } else if (f.kind === 'revolve') {
-        shapeKids.push(h('p.tip', 'The shape spins around a vertical axis. Draw half a profile (like half a vase) with its straight side on the axis.'));
-        shapeKids.push(
+        out.push(h('p.tip', 'The shape spins around a vertical axis. Draw half a profile (like half a vase) with its straight side on the axis.'));
+        out.push(
           W.row(
             'Axis',
             add(
@@ -269,32 +400,33 @@
             )
           )
         );
-        shapeKids.push(add(W.slider({ label: 'Angle', min: 1, max: 360, step: 1, unit: '°', def: 360, get: () => fx().revAngle, set: set('revAngle') })));
-        shapeKids.push(add(W.slider({ label: 'Offset', min: 0, max: 300, step: 1, unit: 'px', def: 0, title: 'Distance from the axis — makes rings and hollow shapes', get: () => fx().revOffset, set: set('revOffset') })));
-        shapeKids.push(add(W.slider({ label: 'Segments', min: 6, max: 128, step: 1, def: 48, title: 'More segments = smoother, larger file', get: () => fx().revSegs, set: set('revSegs') })));
-        if (f.revAngle < 360) shapeKids.push(add(W.toggle({ label: 'Cap the cut ends', get: () => fx().revCaps !== false, set: set('revCaps') })));
+        out.push(add(W.slider({ label: 'Angle', min: 1, max: 360, step: 1, unit: '°', def: 360, get: () => fx().revAngle, set: set('revAngle') })));
+        out.push(add(W.slider({ label: 'Offset', min: 0, max: 300, step: 1, unit: 'px', def: 0, title: 'Distance from the axis — makes rings and hollow shapes', get: () => fx().revOffset, set: set('revOffset') })));
+        out.push(add(W.slider({ label: 'Segments', min: 6, max: 128, step: 1, def: 48, title: 'More segments = smoother, larger file', get: () => fx().revSegs, set: set('revSegs') })));
+        if (f.revAngle < 360) out.push(add(W.toggle({ label: 'Cap the cut ends', get: () => fx().revCaps !== false, set: set('revCaps') })));
       } else if (f.kind === 'inflate') {
-        shapeKids.push(add(W.slider({ label: 'Puffiness', min: 0, max: 300, step: 1, unit: 'px', get: () => fx().infH, set: set('infH') })));
-        shapeKids.push(
+        out.push(add(W.slider({ label: 'Puffiness', min: 0, max: 1000, step: 1, unit: 'px', get: () => fx().infH, set: set('infH') })));
+        out.push(
           W.row(
             'Profile',
             add(W.select({ bare: true, label: 'Profile', options: Object.keys(V3D.Mesh.inflateProfiles).map((k) => ({ value: k, label: V3D.Mesh.inflateProfiles[k].name })), get: () => fx().infProfile, set: set('infProfile') }))
           )
         );
-        shapeKids.push(add(W.slider({ label: 'Roundness', min: 5, max: 100, step: 1, unit: '%', def: 100, title: 'How far in from the edge the surface keeps rising', get: () => Math.round(fx().infSpread * 100), set: (v, fl) => app.setFx('infSpread', v / 100, fl) })));
-        shapeKids.push(
-          W.row(
-            'Sides',
-            add(W.segmented({ options: [{ value: 'both', label: 'Both sides' }, { value: 'front', label: 'Front only' }], get: () => fx().infSides, set: set('infSides') }))
-          )
-        );
-        shapeKids.push(add(W.slider({ label: 'Detail', min: 12, max: 120, step: 1, def: 40, title: 'Mesh resolution. Higher is smoother but slower and larger', get: () => fx().infDetail, set: set('infDetail') })));
+        out.push(add(W.slider({ label: 'Roundness', min: 5, max: 100, step: 1, unit: '%', def: 100, title: 'How far in from the edge the surface keeps rising', get: () => Math.round(fx().infSpread * 100), set: (v, fl) => app.setFx('infSpread', v / 100, fl) })));
+        out.push(W.row('Sides', add(W.segmented({ options: [{ value: 'both', label: 'Both sides' }, { value: 'front', label: 'Front only' }], get: () => fx().infSides, set: set('infSides') }))));
+        out.push(add(W.slider({ label: 'Detail', min: 12, max: 120, step: 1, def: 40, title: 'Mesh resolution. Higher is smoother but slower and larger', get: () => fx().infDetail, set: set('infDetail') })));
       } else {
-        shapeKids.push(h('p.tip', 'Flat keeps the artwork paper-thin — tilt it with the view controls to lay it on a floor, wall or box side.'));
+        out.push(h('p.tip', 'Flat keeps the artwork paper-thin — tilt it with the view controls to lay it on a floor, wall or box side.'));
       }
-      this.el.append(W.section('shape', 'Shape', shapeKids));
+      return out;
+    }
 
-      // Surface.
+    /* ---- Surface: material and shading ---- */
+    tabSurface() {
+      const app = this.app;
+      const fx = () => this.fx();
+      const set = (prop) => (v, final) => app.setFx(prop, v, final);
+      const add = this.add.bind(this);
       const mats = h(
         'div.materials',
         V3D.Presets.materials.map((m) =>
@@ -314,29 +446,31 @@
           )
         )
       );
-      const shadingSel = add(
-        W.select({ label: 'Shading', options: Object.keys(R3D.shadings).map((k) => ({ value: k, label: R3D.shadings[k].name })), get: () => fx().shading, set: set('shading') })
-      );
-      const surf = [mats, shadingSel];
-      if (!['flat', 'lineart', 'wire'].includes(f.shading)) {
-        surf.push(add(W.toggle({ label: 'Smooth gradients', title: 'Draw curved surfaces with vector gradients instead of flat facets', get: () => fx().smooth, set: set('smooth') })));
-        surf.push(add(W.slider({ label: 'Color bands', min: 0, max: 10, step: 1, def: 0, title: '0 = continuous shading. 2–6 gives a poster / cel look.', get: () => fx().steps, set: set('steps') })));
-        surf.push(add(W.slider({ label: 'Smoothing angle', min: 0, max: 90, step: 1, unit: '°', def: 35, title: 'Edges sharper than this stay crisp', get: () => fx().smoothAngle, set: set('smoothAngle') })));
+      const out = [mats, add(W.select({ label: 'Shading', options: Object.keys(R3D.shadings).map((k) => ({ value: k, label: R3D.shadings[k].name })), get: () => fx().shading, set: set('shading') }))];
+      if (!['flat', 'lineart', 'wire'].includes(fx().shading)) {
+        out.push(add(W.toggle({ label: 'Smooth gradients', title: 'Draw curved surfaces with vector gradients instead of flat facets', get: () => fx().smooth, set: set('smooth') })));
+        out.push(add(W.slider({ label: 'Color bands', min: 0, max: 10, step: 1, def: 0, title: '0 = continuous shading. 2–6 gives a poster / cel look.', get: () => fx().steps, set: set('steps') })));
+        out.push(add(W.slider({ label: 'Smoothing angle', min: 0, max: 90, step: 1, unit: '°', def: 35, title: 'Edges sharper than this stay crisp', get: () => fx().smoothAngle, set: set('smoothAngle') })));
       }
-      this.el.append(W.section('surface', 'Surface & material', surf));
+      return out;
+    }
 
-      // Colors.
-      const colorKids = [];
-      colorKids.push(
+    /* ---- Colors: front, sides, bevel, back, shadow tone, highlight ---- */
+    tabColors(t) {
+      const app = this.app;
+      const fx = () => this.fx();
+      const add = this.add.bind(this);
+      const f = fx();
+      const out = [
         add(
           W.colorButton({
             label: 'Front',
             title: 'Main color (the shape’s fill)',
-            get: () => (t.style.fill && typeof t.style.fill === 'object' ? t.style.fill : t.style.fill),
+            get: () => t.style.fill,
             set: (c, final) => app.setStyle({ fill: c || '#cccccc' }, final, 'Fill color'),
           })
-        )
-      );
+        ),
+      ];
       const autoColor = (prop, label, title) =>
         add(
           W.colorButton({
@@ -350,11 +484,11 @@
             set: (c, final) => app.setFx(prop, c, final),
           })
         );
-      if (f.kind === 'extrude' || f.kind === 'revolve') colorKids.push(autoColor('sideColor', 'Sides', 'Color of the extruded sides (Auto = same as front)'));
-      if (f.kind === 'extrude' && f.bevel !== 'none') colorKids.push(autoColor('bevelColor', 'Bevel', 'Color of the bevel (Auto = same as sides)'));
-      colorKids.push(autoColor('backColor', 'Back', 'Color of the back face'));
+      if (f.kind === 'extrude' || f.kind === 'revolve') out.push(autoColor('sideColor', 'Sides', 'Color of the extruded sides (Auto = same as front)'));
+      if (f.kind === 'extrude' && f.bevel !== 'none') out.push(autoColor('bevelColor', 'Bevel', 'Color of the bevel (Auto = same as sides)'));
+      out.push(autoColor('backColor', 'Back', 'Color of the back face'));
       if (!['flat', 'lineart', 'wire'].includes(f.shading)) {
-        colorKids.push(
+        out.push(
           W.row(
             'Shadow tone',
             add(
@@ -370,18 +504,26 @@
             )
           )
         );
-        if (f.shadowTint !== 'auto' && f.shadowTint !== 'black')
-          colorKids.push(add(W.colorButton({ label: 'Shadow color', get: () => fx().shadowTint, set: (c, fl) => app.setFx('shadowTint', c || 'auto', fl) })));
-        colorKids.push(add(W.colorButton({ label: 'Highlight', title: 'Color of the brightest spots', get: () => fx().highlight, set: (c, fl) => app.setFx('highlight', c || '#ffffff', fl) })));
+        if (f.shadowTint !== 'auto' && f.shadowTint !== 'black') out.push(add(W.colorButton({ label: 'Shadow color', get: () => fx().shadowTint, set: (c, fl) => app.setFx('shadowTint', c || 'auto', fl) })));
+        out.push(add(W.colorButton({ label: 'Highlight', title: 'Color of the brightest spots', get: () => fx().highlight, set: (c, fl) => app.setFx('highlight', c || '#ffffff', fl) })));
       }
-      this.el.append(W.section('colors', 'Colors', colorKids));
+      return out;
+    }
 
-      // Light.
-      this.el.append(this.lightSection(false, t));
+    /* ---- Light ---- */
+    tabLight(t) {
+      return this.lightKids(false, t);
+    }
 
-      // Outline & shadow.
-      const extra = [];
-      extra.push(
+    /* ---- Outline: edge lines and shadow ---- */
+    tabOutline() {
+      const app = this.app;
+      const fx = () => this.fx();
+      const set = (prop) => (v, final) => app.setFx(prop, v, final);
+      const add = this.add.bind(this);
+      const f = fx();
+      const out = [];
+      out.push(
         W.row(
           'Edge lines',
           add(
@@ -398,11 +540,11 @@
         )
       );
       if (f.edges !== 'none' || f.shading === 'lineart' || f.shading === 'wire') {
-        extra.push(add(W.colorButton({ label: 'Line color', get: () => fx().edgeColor, set: (c, fl) => app.setFx('edgeColor', c || '#1b1c22', fl) })));
-        extra.push(add(W.slider({ label: 'Line width', min: 0.2, max: 8, step: 0.1, unit: 'px', get: () => fx().edgeWidth, set: set('edgeWidth') })));
-        extra.push(add(W.slider({ label: 'Crease angle', min: 5, max: 120, step: 1, unit: '°', def: 40, title: 'Only edges sharper than this get a line', get: () => fx().creaseAngle, set: set('creaseAngle') })));
+        out.push(add(W.colorButton({ label: 'Line color', get: () => fx().edgeColor, set: (c, fl) => app.setFx('edgeColor', c || '#1b1c22', fl) })));
+        out.push(add(W.slider({ label: 'Line width', min: 0.2, max: 8, step: 0.1, unit: 'px', get: () => fx().edgeWidth, set: set('edgeWidth') })));
+        out.push(add(W.slider({ label: 'Crease angle', min: 5, max: 120, step: 1, unit: '°', def: 40, title: 'Only edges sharper than this get a line', get: () => fx().creaseAngle, set: set('creaseAngle') })));
       }
-      extra.push(
+      out.push(
         W.row(
           'Shadow',
           add(
@@ -419,32 +561,102 @@
         )
       );
       if (f.shadow !== 'none') {
-        extra.push(add(W.slider({ label: 'Opacity', min: 0, max: 100, step: 1, unit: '%', get: () => Math.round(fx().shadowOpacity * 100), set: (v, fl) => app.setFx('shadowOpacity', v / 100, fl) })));
-        extra.push(add(W.slider({ label: 'Softness', min: 0, max: 40, step: 0.5, unit: 'px', get: () => fx().shadowBlur, set: set('shadowBlur') })));
-        if (f.shadow === 'drop') extra.push(add(W.slider({ label: 'Distance', min: 0, max: 300, step: 1, unit: 'px', get: () => fx().shadowDist, set: set('shadowDist') })));
-        extra.push(add(W.colorButton({ label: 'Shadow', get: () => fx().shadowColor, set: (c, fl) => app.setFx('shadowColor', c || '#000000', fl) })));
+        out.push(add(W.slider({ label: 'Opacity', min: 0, max: 100, step: 1, unit: '%', get: () => Math.round(fx().shadowOpacity * 100), set: (v, fl) => app.setFx('shadowOpacity', v / 100, fl) })));
+        out.push(add(W.slider({ label: 'Softness', min: 0, max: 40, step: 0.5, unit: 'px', get: () => fx().shadowBlur, set: set('shadowBlur') })));
+        if (f.shadow === 'drop') out.push(add(W.slider({ label: 'Distance', min: 0, max: 300, step: 1, unit: 'px', get: () => fx().shadowDist, set: set('shadowDist') })));
+        out.push(add(W.colorButton({ label: 'Shadow', get: () => fx().shadowColor, set: (c, fl) => app.setFx('shadowColor', c || '#000000', fl) })));
       }
-      this.el.append(W.section('extras', 'Outlines & shadow', extra, { open: false }));
+      return out;
+    }
 
-      this.el.append(
-        h(
-          'div.fx-actions',
-          W.button({ icon: 'expand', label: 'Expand to paths', title: 'Turn the 3D result into plain editable vector shapes', onClick: () => app.expand3D() }),
-          W.button({ icon: 'copy', label: 'Copy style', title: 'Copy these 3D settings', onClick: () => app.copy3D() }),
-          W.button({ icon: 'sparkle', label: 'Paste style', title: 'Apply copied 3D settings to the selection', onClick: () => app.paste3D() })
+    /* ---- Style: fill, stroke (the edge lines), opacity and part names ---- */
+    tabStyle(t) {
+      const app = this.app;
+      const fx = () => this.fx();
+      const set = (prop) => (v, final) => app.setFx(prop, v, final);
+      const add = this.add.bind(this);
+      const stroked = fx().edges && fx().edges !== 'none';
+      const out = [h('div.sub-label', 'Fill')];
+      out.push(add(W.colorButton({ label: 'Fill', title: 'The shape’s color (the front of the 3D object)', get: () => t.style.fill, set: (c, final) => app.setStyle({ fill: c || '#cccccc' }, final, 'Fill color') })));
+      out.push(h('div.sub-label', 'Stroke'));
+      out.push(
+        add(
+          W.colorButton({
+            label: 'Stroke',
+            allowNone: true,
+            title: 'Lines around the 3D object: its outline and sharp edges. None removes them.',
+            get: () => (fx().edges && fx().edges !== 'none' ? fx().edgeColor : null),
+            set: (c, final) => app.setStyle(c ? { stroke: c, strokeWidth: fx().edgeWidth } : { stroke: null }, final, 'Stroke'),
+          })
         )
       );
-      this.statsEl = h('p.fx-stats.muted');
-      this.el.append(this.statsEl);
-      this.updateStats();
+      if (stroked) {
+        out.push(add(W.slider({ label: 'Width', min: 0.2, max: 8, step: 0.1, unit: 'px', get: () => fx().edgeWidth, set: (v, final) => app.setStyle({ strokeWidth: v }, final, 'Stroke width') })));
+        out.push(
+          W.row(
+            'Draw on',
+            add(
+              W.segmented({
+                options: [
+                  { value: 'outline', label: 'Outline', title: 'Silhouette and sharp edges' },
+                  { value: 'all', label: 'All edges', title: 'Every facet edge' },
+                ],
+                get: () => fx().edges,
+                set: set('edges'),
+              })
+            )
+          )
+        );
+        if (fx().edges === 'outline') out.push(add(W.slider({ label: 'Crease angle', min: 5, max: 120, step: 1, unit: '°', def: 40, title: 'Only edges sharper than this get a line', get: () => fx().creaseAngle, set: set('creaseAngle') })));
+      }
+      out.push(h('div.sub-label', 'Opacity'));
+      out.push(
+        add(
+          W.slider({
+            label: 'Opacity',
+            min: 0,
+            max: 100,
+            step: 1,
+            unit: '%',
+            def: 100,
+            get: () => Math.round((t.style.opacity == null ? 1 : t.style.opacity) * 100),
+            set: (v, fl) => app.setStyle({ opacity: v / 100 }, fl, 'Opacity'),
+          })
+        )
+      );
+      out.push(h('div.sub-label', 'Names'));
+      out.push(
+        h(
+          'p.tip',
+          'Every part of the result is named for what it is, its color and where it sits, like “Fill - Light Blue - Front” or “Line - Black - Top”. Fills and lines are kept in separate groups when you export SVG or expand to paths.'
+        )
+      );
+      out.push(
+        W.row(
+          'Colors as',
+          add(
+            W.segmented({
+              options: [
+                { value: 'names', label: 'Names', title: 'Like “Light Blue”' },
+                { value: 'cmyk', label: 'CMYK codes', title: 'Like “C75 M49 Y0 K5”' },
+              ],
+              get: () => (fx().nameColors === 'cmyk' ? 'cmyk' : 'names'),
+              set: set('nameColors'),
+            })
+          )
+        )
+      );
+      return out;
     }
+
     updateStats() {
       if (!this.statsEl) return;
       const t = this.target();
       const c = t && Doc.cache.get(t.id);
       if (c && c.faces != null) this.statsEl.textContent = `${c.faces} vector faces · rendered in ${Math.max(1, Math.round(c.ms || 0))} ms`;
     }
-    lightSection(sceneOnly, t) {
+    /** The light controls: the scene light, or the object's own light when it doesn't share it. */
+    lightKids(sceneOnly, t) {
       const app = this.app;
       const kids = [];
       const usesScene = () => sceneOnly || !t || !t.fx || t.fx.useSceneLight !== false;
@@ -508,7 +720,7 @@
       kids.push(sl('fill', 'Fill light', 0, 100, 1, 'A soft second light from the opposite side'));
       kids.push(sl('specular', 'Highlight', 0, 150, 1, 'Brightness of shiny highlights'));
       kids.push(sl('gloss', 'Gloss', 0, 100, 1, 'Smaller, sharper highlights', 1));
-      return W.section(sceneOnly ? 'scenelight' : 'light', sceneOnly ? 'Scene light' : 'Light', kids);
+      return kids;
     }
   }
 

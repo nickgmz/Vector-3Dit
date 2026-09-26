@@ -19,7 +19,10 @@ const js = files
   .replace(/<\/script/gi, '<\\/script');
 const css = readFileSync(join(root, 'css', 'app.css'), 'utf8');
 
+// One self-contained file: the favicon links become one embedded PNG icon.
+const icon = 'data:image/png;base64,' + readFileSync(join(root, 'brand', 'vector-3dit-64.png')).toString('base64');
 let out = html
+  .replace(/<link rel="icon"[^>]*>\s*<link rel="icon"[^>]*>\s*<link rel="apple-touch-icon"[^>]*>/, () => `<link rel="icon" type="image/png" href="${icon}">`)
   .replace('<link rel="stylesheet" href="css/app.css">', () => `<style>\n${css}\n</style>`)
   .replace(scriptBlock[0], () => `<script>\n${js}\n</script>`);
 

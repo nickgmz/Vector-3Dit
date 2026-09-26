@@ -14,7 +14,7 @@
     height: opts.height || 800,
     background: opts.background === undefined ? '#ffffff' : opts.background,
     objects: [],
-    scene: { light: V3D.R3D.defaultLight(), seam: 1 },
+    scene: { light: V3D.R3D.defaultLight(), seam: 1, cameras: {} },
   });
 
   Doc.defaultStyle = () => ({
@@ -250,9 +250,8 @@
       const subs = Doc.worldSubs(o, pm);
       const geoBox = Path.bbox(subs);
       if (o.fx) {
-        const W = M2.mul(pm, o.transform);
-        const pivot = o.fx.pivot ? M2.apply(W, o.fx.pivot[0], o.fx.pivot[1]) : null;
-        const r = V3D.R3D.render(subs, o.fx, o.style, ctx.scene, { id: o.id, quality, pivot });
+        const v = Doc.view3D(o, M2.mul(pm, o.transform), ctx.scene);
+        const r = V3D.R3D.render(subs, v.fx, o.style, ctx.scene, { id: o.id, quality, pivot: v.pivot });
         res = { markup: r.markup, bbox: r.bbox || geoBox, faces: r.faces, ms: r.ms, flatBox: geoBox };
       } else {
         const markup = subs.length ? shapeMarkup(o, subs, ctx.editor, M2.mul(pm, o.transform)) : '';
@@ -274,6 +273,20 @@
   }
   Doc.wrap = wrap;
 
+  /** The camera a 3D object is locked to, if it still exists. */
+  Doc.cameraOf = (o, scene) => (o.fx && o.fx.camera && scene && scene.cameras && scene.cameras[o.fx.camera]) || null;
+
+  /**
+   * The settings a 3D object renders with and the point it turns around. A saved scene camera it's locked to
+   * gives the angles, perspective, turning point and camera distance, so every object on it shares one view.
+   * W: the object's world matrix.
+   */
+  Doc.view3D = (o, W, scene) => {
+    const cam = Doc.cameraOf(o, scene);
+    if (cam) return { fx: Object.assign({}, o.fx, { rx: cam.rx, ry: cam.ry, rz: cam.rz, persp: cam.persp, sceneRadius: cam.reach }), pivot: cam.pivot.slice() };
+    return { fx: o.fx, pivot: o.fx.pivot ? M2.apply(W, o.fx.pivot[0], o.fx.pivot[1]) : null };
+  };
+
   /** Bounding box of an object in doc space (uses the render cache). */
   Doc.bbox = (o, ctx) => Doc.renderObject(o, ctx).bbox;
 
@@ -283,11 +296,28 @@
     const ctx = { scene: doc.scene, quality: 'full', editor: false, sceneVersion: 'export' };
     let body = '';
     let bbox = null;
+    // Readable, unique ids, and Inkscape labels: a 3D object's parts are named like "Fill - Light Blue - Front".
+    const used = new Set();
+    const uniq = (base) => {
+      let id = base;
+      for (let n = 2; used.has(id); n++) id = base + '-' + n;
+      used.add(id);
+      return id;
+    };
+    let labels = false;
     for (const o of objs) {
       if (o.visible === false) continue;
       const r = Doc.renderObject(o, Object.assign({}, ctx, { parentM: opts.parentMatrices ? opts.parentMatrices.get(o.id) : null }));
-      const label = o.name ? ` id="${esc(slug(o.name))}"` : '';
-      body += `<g${label}>${r.markup}</g>`;
+      // A 3D object is labelled like the Inkscape extension's results: "3D Extrude: Heart".
+      const kind = o.fx && V3D.R3D.kinds[o.fx.kind];
+      const name = kind ? `3D ${kind.name}: ${Doc.label(o)}` : o.name || '';
+      const id = name ? uniq(slug(Doc.label(o)) + (kind ? '-3d' : '')) : '';
+      const markup = r.markup.replace(/ data-name="([^"]*)"/g, (m, part) => {
+        labels = true;
+        return ` id="${uniq((id || 'obj') + '-' + slug(part).toLowerCase())}" inkscape:label="${part}"`;
+      });
+      if (name) labels = true;
+      body += `<g${id ? ` id="${esc(id)}" inkscape:label="${esc(name)}"` : ''}>${markup}</g>`;
       bbox = V3D.Rect.union(bbox, r.bbox);
     }
     // Export renders must not pollute the editor cache.
@@ -301,7 +331,7 @@
     // Seam strokes between 3D faces stay one display pixel wide at any size (apps that ignore this use 1 unit).
     const style = body.includes('class="obj3d"') ? '<style>.obj3d path{vector-effect:non-scaling-stroke}.obj3d path.e{vector-effect:none}</style>' : '';
     return (
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${fmt(w)}" height="${fmt(h)}" viewBox="${fmt(area.x)} ${fmt(area.y)} ${fmt(w)} ${fmt(h)}">` +
+      `<svg xmlns="http://www.w3.org/2000/svg"${labels ? ' xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"' : ''} width="${fmt(w)}" height="${fmt(h)}" viewBox="${fmt(area.x)} ${fmt(area.y)} ${fmt(w)} ${fmt(h)}">` +
       `<title>${esc(doc.name || 'Vector 3Dit drawing')}</title>${meta}${style}${bgRect}${body}</svg>`
     );
   };

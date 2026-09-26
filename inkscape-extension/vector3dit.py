@@ -8,6 +8,7 @@ re-renders it instead of stacking a second 3D effect on top.
 
 import json
 import math
+import re
 
 import inkex
 from inkex import Group, PathElement, Transform
@@ -27,17 +28,25 @@ SOURCE_CLASS = "v3d-source"
 CAMERAS_ATTR = "data-v3d-cameras"  # saved scene cameras, on the document root
 
 ROTATION = ("rx", "ry", "rz", "persp")
+PLACEMENT = ("obj_rx", "obj_ry", "obj_rz", "obj_push")  # an object's own turn and push back inside a scene camera
 CONTEXT_SKIP = {"defs", "metadata", "namedview", "clipPath", "mask", "pattern", "marker", "symbol", "title",
                 "desc", "style", "script", "linearGradient", "radialGradient", "filter"}
 
 # Settings measured in px: scaled to the document's user units.
 LENGTHS = ("depth", "bevel_w", "bevel_h", "rev_offset", "inf_height", "edge_width",
-           "shadow_blur", "shadow_dist", "seam")
+           "shadow_blur", "shadow_dist", "seam", "obj_push")
+KIND_NAMES = {"flat": "Flat", "extrude": "Extrude", "revolve": "Revolve", "inflate": "Inflate"}
 
 
 def parse_fragment(markup):
     root = etree.fromstring('<g xmlns="%s">%s</g>' % (SVG_NS, markup), parser=_PARSER)
     return list(root)
+
+
+def slug(text):
+    """A readable id part: "Fill - Light Blue - Front" -> "fill-light-blue-front"."""
+    s = re.sub(r"[^a-z0-9]+", "-", str(text).lower()).strip("-")[:48].strip("-") or "shape"
+    return s if s[0].isalpha() else "shape-" + s
 
 
 def color_hex(c):
@@ -49,6 +58,8 @@ def color_hex(c):
 
 
 class Vector3Dit(inkex.EffectExtension):
+    _ids = None  # every id in the document, collected on first use
+
     def add_arguments(self, pars):
         pars.add_argument("--tab", default="shape")
         pars.add_argument("--kind", default="extrude")
@@ -109,6 +120,7 @@ class Vector3Dit(inkex.EffectExtension):
         pars.add_argument("--shadow_dist", type=float, default=40.0)
         pars.add_argument("--shadow_color", type=inkex.Color, default=inkex.Color("#10121a"))
         pars.add_argument("--seam", type=float, default=1.0)
+        pars.add_argument("--name_colors", default="names")
 
     # ---------------------------------------------------------------- settings
     def settings(self):
@@ -132,7 +144,7 @@ class Vector3Dit(inkex.EffectExtension):
             "crease_angle": o.crease_angle,
             "shadow": o.shadow, "shadow_opacity": o.shadow_opacity / 100.0, "shadow_blur": o.shadow_blur,
             "shadow_dist": o.shadow_dist, "shadow_color": color_hex(o.shadow_color) or "#10121a",
-            "seam": o.seam,
+            "seam": o.seam, "name_colors": o.name_colors,
         }
         if o.view in E.PRESETS:
             fx["rx"], fx["ry"], fx["rz"] = E.PRESETS[o.view]
@@ -144,7 +156,8 @@ class Vector3Dit(inkex.EffectExtension):
         # Lengths are entered in px; convert to the document's user units.
         k = self.svg.unittouu("1px")
         for key in LENGTHS:
-            fx[key] = fx[key] * k
+            if key in fx:
+                fx[key] = fx[key] * k
         return fx, material_fill
 
     # ---------------------------------------------------------------- geometry
@@ -260,9 +273,11 @@ class Vector3Dit(inkex.EffectExtension):
         plan, skipped_text = self.plan()
         for src, res, subs, pivot in plan:
             fx_one = fx
-            if res is not None and self.options.keep_rotation:
+            if res is not None:  # the dialogs don't show an object's place in its scene, so it stays
                 stored = self.stored_settings(res)
-                fx_one = dict(fx, **{k: stored[k] for k in ROTATION if k in stored})
+                fx_one = dict(fx, **{k: stored[k] for k in PLACEMENT if k in stored})
+            if res is not None and self.options.keep_rotation:
+                fx_one.update({k: stored[k] for k in ROTATION if k in stored})
                 cams = self.load_cameras()
                 if stored.get("camera") in cams:
                     pivot = self.use_camera(fx_one, stored["camera"], cams[stored["camera"]])
@@ -334,9 +349,11 @@ class Vector3Dit(inkex.EffectExtension):
             parent = src.getparent()
             res = Group()
             parent.insert(parent.index(src), res)
-            prefix = self.svg.get_unique_id("v3d")
+            # A readable id, like "heart-3d"; the parts inside are named after it ("heart-3d-fill-red-front").
+            gid = self.new_id(slug(src.label or src.get("id") or "shape") + "-3d")
+            res.set("id", gid)
+            prefix = gid + "-"
             res.set(PREFIX_ATTR, prefix)
-            res.set("id", self.svg.get_unique_id(prefix + "-3d"))
             src_copy = PathElement()
             src_copy.set("d", str(src.path.transform(src.composed_transform())))
             src_copy.style = inkex.Style(dict(src.specified_style()))
@@ -347,10 +364,15 @@ class Vector3Dit(inkex.EffectExtension):
                 src_copy.set("id", orig_id)  # Remove 3D restores the shape under its original id.
             source = src_copy
         else:
-            prefix = res.get(PREFIX_ATTR) or self.svg.get_unique_id("v3d")
-            res.set(PREFIX_ATTR, prefix)
             if not res.get("id"):
-                res.set("id", self.svg.get_unique_id(prefix + "-3d"))
+                res.set("id", self.new_id(slug(src.label or "shape") + "-3d"))
+            # The parts and gradients are named after the group's id, which stays unique even when the group
+            # was duplicated (a duplicate carries the original's prefix, so its gradients are left alone).
+            old = res.get(PREFIX_ATTR)
+            prefix = res.get("id") + "-"
+            if old and old != prefix and not self.prefix_shared(old, res):
+                self.remove_defs(old)
+            res.set(PREFIX_ATTR, prefix)
             # Keep the stored original, in world coordinates, through any moves of the result.
             src.set("d", str(src.path.transform(src.composed_transform())))
             src.style = inkex.Style(dict(src.specified_style()))
@@ -369,22 +391,52 @@ class Vector3Dit(inkex.EffectExtension):
         if material_fill:
             data["fill"] = material_fill  # a material's own color, kept for later re-renders
         res.set(RESULT_ATTR, json.dumps(data, separators=(",", ":")))
-        res.label = "3D %s: %s" % (fx["kind"], source.label or "shape")
-        res.style = inkex.Style({"stroke-width": E.fmt(out["seam"], 3), "stroke-linejoin": "round"} if out["seam"] else {})
+        res.label = "3D %s: %s" % (KIND_NAMES.get(fx["kind"], fx["kind"]), source.label or "shape")
+        res.style = inkex.Style({"opacity": E.fmt(opacity, 3)} if opacity < 1 else {})
 
         source.set("class", SOURCE_CLASS)
         source.style["display"] = "none"
         source.transform = Transform()
         res.append(source)
-        faces = Group()
-        faces.set("class", "v3d-faces")
-        if opacity < 1:
-            faces.style["opacity"] = E.fmt(opacity, 3)
-        for el in parse_fragment(out["body"]):
-            faces.append(el)
-        res.append(faces)
+        # Shadow, Fills and Lines groups, with every part labelled like "Fill - Light Blue - Front".
+        parts = parse_fragment(out["body"])
+        self.name_parts(parts, prefix)
+        for el in parts:
+            res.append(el)
         for el in parse_fragment("".join(out["defs"])):
             self.svg.defs.append(el)
+
+    def prefix_shared(self, prefix, res):
+        """True when another 3D result still uses these gradient names (a duplicated group)."""
+        return any(r is not res and r.get(PREFIX_ATTR) == prefix for r in self.svg.xpath("//*[@%s]" % PREFIX_ATTR))
+
+    def new_id(self, base):
+        """An id nothing in the document uses yet, not even as the start of its parts' ids: base, base-2, base-3..."""
+        if self._ids is None:
+            self._ids = set(self.svg.xpath("//@id"))
+        n = 1
+        while True:
+            cand = base if n == 1 else "%s-%d" % (base, n)
+            head = cand + "-"
+            if cand not in self._ids and not any(i.startswith(head) for i in self._ids):
+                self._ids.add(cand)
+                return cand
+            n += 1
+
+    @staticmethod
+    def name_parts(parts, prefix):
+        """The engine's data-name becomes each part's label (as shown in Layers and Objects) and a readable id."""
+        used = {}
+        for top in parts:
+            for el in top.iter():
+                name = el.get("data-name")
+                if name is None:
+                    continue
+                del el.attrib["data-name"]
+                el.set("{http://www.inkscape.org/namespaces/inkscape}label", name)
+                base = prefix + slug(name)
+                used[base] = used.get(base, 0) + 1
+                el.set("id", base if used[base] == 1 else "%s-%d" % (base, used[base]))
 
     # ---------------------------------------------------------------- 3D editor window
     # The window shows lengths in px and fractions as %; the document stores user units and 0-1 fractions.
@@ -412,7 +464,7 @@ class Vector3Dit(inkex.EffectExtension):
         fx, light = {}, {}
         for key in keys:
             value = state[key]
-            if key in ("fill", "opacity", "camera", "cameras", "shared_light"):
+            if key in ("fill", "opacity", "camera", "cameras", "shared_light", "turn_mode"):
                 continue
             if key.startswith("light_"):
                 lk = key[6:]
@@ -525,6 +577,8 @@ class Vector3Dit(inkex.EffectExtension):
 
         defaults, material_fill = self.settings()
         defaults["kind"] = "extrude"  # plain shapes start as an extrusion
+        for key, value in E.defaults().items():  # settings the dialogs don't have (placement in a scene)
+            defaults.setdefault(key, value)
         items = []
         for src, res, subs, pivot in plan:
             base = self.stored_settings(res) if res is not None else self.stroke_settings(src)
@@ -789,7 +843,9 @@ class Vector3Dit(inkex.EffectExtension):
                 src.style.pop("display", None)
                 src.attrib.pop("class", None)
                 parent.insert(parent.index(res), src)
-                self.remove_defs(res.get(PREFIX_ATTR) or "~")
+                prefix = res.get(PREFIX_ATTR)
+                if prefix and not self.prefix_shared(prefix, res):
+                    self.remove_defs(prefix)
                 parent.remove(res)
                 done += 1
         if not done:

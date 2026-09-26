@@ -47,9 +47,14 @@
       app.bus.on('selection', () => {
         this.refreshPanels(true);
         this.buildCtx();
+        if (app.canvas) app.canvas.applyFade();
       });
       app.bus.on('change', refreshPanels);
-      app.bus.on('fx', refreshPanels);
+      app.bus.on('fx', () => {
+        refreshPanels();
+        // Making a shape 3D (or flat again) shows or hides the canvas bar's Other objects options.
+        if (this._ctx3D !== (this.tab === '3d' && app.fxTargets(true).length > 0)) this.buildCtx();
+      });
       app.bus.on('doc', refreshPanels);
       app.bus.on('style', () => {
         this.refreshPanels();
@@ -189,7 +194,7 @@
             { label: 'Remove 3D', icon: 'close', enabled: has3D, action: () => app.remove3D() },
             { sep: true },
             { header: 'View presets' },
-            ...R3D.presets.map((p) => ({ label: p.name, enabled: has3D, action: () => app.setFxMany({ rx: p.r[0], ry: p.r[1], rz: p.r[2] }, 'View: ' + p.name) })),
+            ...R3D.presets.map((p) => ({ label: p.name, enabled: has3D, action: () => app.turnSelection(p.r.slice(), true, 'View: ' + p.name) })),
             { sep: true },
             { label: 'Expand to paths', icon: 'expand', enabled: has3D, action: () => app.expand3D() },
             { label: 'Copy 3D style', icon: 'copy', enabled: has3D, action: () => app.copy3D() },
@@ -510,11 +515,11 @@
                   const p = R3D.presets.find((x) => x.id === v);
                   if (!p) return;
                   if (!app.fxTargets(true).length) app.apply3D('extrude');
-                  app.setFxMany({ rx: p.r[0], ry: p.r[1], rz: p.r[2] }, 'View: ' + p.name);
+                  app.turnSelection(p.r.slice(), true, 'View: ' + p.name);
                   this.buildCtx();
                 },
               }),
-              W.button({ icon: 'rotCCW', label: 'Reset', cls: 'small', onClick: () => app.setFxMany({ rx: 0, ry: 0, rz: 0 }, 'Reset rotation') })
+              W.button({ icon: 'rotCCW', label: 'Reset', cls: 'small', onClick: () => app.turnSelection([0, 0, 0], true, 'Reset rotation') })
             ),
             has
               ? grp(
@@ -525,11 +530,8 @@
                       min: 0,
                       max: 160,
                       digits: 0,
-                      get: () => {
-                        const o = app.fxTargets(true).pop();
-                        return o ? o.fx.persp : null;
-                      },
-                      set: (v) => app.setFx('persp', Math.max(0, Math.min(160, v)), true),
+                      get: () => app.perspective(),
+                      set: (v) => app.setPerspective(Math.max(0, Math.min(160, v)), true),
                     })
                   )
                 )
@@ -561,6 +563,24 @@
         default:
           bar.append(h('span.ctx-hint', t ? t.hint : ''));
       }
+      // While 3D objects are edited on the 3D tab: how the rest of the drawing shows (as in the Inkscape extension).
+      this._ctx3D = this.tab === '3d' && app.fxTargets(true).length > 0;
+      if (this._ctx3D)
+        bar.append(
+          h(
+            'div.ctx-grp.ctx-others',
+            addc(W.check({ label: 'Other objects', title: 'Show the rest of the drawing, faded, to help with placement', get: () => app.prefs.otherObjects, set: (v) => app.setPref('otherObjects', v) })),
+            addc(
+              W.check({
+                label: 'Full color',
+                title: 'Show the rest of the drawing in its real colors instead of faded',
+                get: () => app.prefs.otherFullColor,
+                disabled: () => !app.prefs.otherObjects,
+                set: (v) => app.setPref('otherFullColor', v),
+              })
+            )
+          )
+        );
     }
 
     /* ---------------- panel ---------------- */
@@ -604,6 +624,11 @@
       const p = this.panels[id];
       this.panelScroll.append(p.el);
       p.update(true);
+      // The rest of the drawing fades only while the 3D tab is open.
+      if (this.app.canvas) {
+        this.app.canvas.applyFade();
+        this.buildCtx();
+      }
     }
     refreshPanels(force) {
       const p = this.panels && this.panels[this.tab];
@@ -1338,10 +1363,9 @@
     }
   }
 
-  /** Vector 3Dit mark: a three-tone cube whose corners carry vector node handles. */
+  /** The Vector 3Dit logo: a blue, three-dimensional "3". */
   function logoMark(size = 26) {
-    const node = (x, y) => `<rect x="${x - 2.2}" y="${y - 2.2}" width="4.4" height="4.4" rx=".8" fill="var(--logo-node)" stroke="var(--logo-edge)" stroke-width="1.2"/>`;
-    return `<svg viewBox="0 0 32 32" width="${size}" height="${size}" aria-hidden="true"><path d="M16 4 27 10.3 16 16.6 5 10.3z" fill="var(--logo-top)"/><path d="M5 10.3 16 16.6V29L5 22.7z" fill="var(--logo-left)"/><path d="M27 10.3 16 16.6V29l11-6.3z" fill="var(--logo-right)"/><path d="M16 4 27 10.3v12.4L16 29 5 22.7V10.3zM5 10.3 16 16.6 27 10.3M16 16.6V29" fill="none" stroke="var(--logo-edge)" stroke-width="1.2" stroke-linejoin="round"/>${node(16, 4)}${node(5, 22.7)}${node(27, 22.7)}</svg>`;
+    return `<img src="${V3D.brand.logo}" width="${size}" height="${size}" alt="" draggable="false">`;
   }
 
   V3D.UI = UI;

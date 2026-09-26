@@ -140,6 +140,21 @@
     return el;
   };
 
+  /** A small checkbox with a label (used in the canvas tool bar). */
+  W.check = (o) => {
+    const input = h('input', { type: 'checkbox' });
+    const el = h('label.check', { title: o.title || null }, input, h('span', o.label));
+    input.addEventListener('change', () => o.set(input.checked));
+    el.sync = () => {
+      input.checked = !!o.get();
+      const off = !!(o.disabled && o.disabled());
+      input.disabled = off;
+      el.classList.toggle('off', off);
+    };
+    el.sync();
+    return el;
+  };
+
   W.select = (o) => {
     const id = wid('sel');
     const sel = h('select.select', { id, 'aria-label': o.label || null });

@@ -31,19 +31,26 @@
           o.fx = R3D.defaults('extrude', b ? Math.max(V3D.Rect.w(b), V3D.Rect.h(b)) * (o.type === 'text' ? 0.55 : 1) : 200);
           o.fx.rx = 0;
           o.fx.ry = 0;
+          app.carryStroke(o);
           app.setPivot(o, pivots.get(o.id));
           app.touch(o);
           added = true;
         }
       if (added) app.toast('Extruded — keep dragging to rotate');
+      // Each object turns its own view, the scene camera it's locked to (once per camera) or, in This object
+      // mode, its own turn inside the scene.
+      const targets = app.turnTargets(objs);
       this.s = {
         sx: ev.sx,
         sy: ev.sy,
         objs,
-        R0: new Map(objs.map((o) => [o.id, M3.fromEuler(o.fx.rx, o.fx.ry, o.fx.rz)])),
+        targets,
+        R0: targets.map((t) => M3.fromEuler(...app.getTurn(t))),
         moved: false,
       };
-      app.setDraft(objs.map((o) => o.id));
+      const draft = new Set(objs.map((o) => o.id));
+      for (const t of targets) if (t.cam) for (const id of app.lockedTo(t.name)) draft.add(id);
+      app.setDraft([...draft]);
       app.canvas.stage.classList.add('grabbing');
       app.bus.emit('fx');
     },
@@ -64,16 +71,13 @@
       let Rd;
       if (ev.alt) Rd = M3.rotZ(-dx * k);
       else Rd = M3.mul(M3.rotX(dy * k), M3.rotY(dx * k));
-      for (const o of s.objs) {
-        const e = M3.toEuler(M3.mul(Rd, s.R0.get(o.id)));
-        o.fx.rx = e.rx;
-        o.fx.ry = e.ry;
-        o.fx.rz = e.rz;
-        app.touch(o);
-      }
+      s.targets.forEach((t, i) => {
+        const e = M3.toEuler(M3.mul(Rd, s.R0[i]));
+        app.setTurn(t, [e.rx, e.ry, e.rz]);
+      });
       s.moved = true;
-      const f = s.objs[0].fx;
-      app.status(`Tilt ${fmt(f.rx, 1)}°   Turn ${fmt(f.ry, 1)}°   Spin ${fmt(f.rz, 1)}°`, true);
+      const [rx, ry, rz] = app.getTurn(s.targets[0]);
+      app.status(`${s.targets[0].cam ? 'Camera: ' : ''}Tilt ${fmt(rx, 1)}°   Turn ${fmt(ry, 1)}°   Spin ${fmt(rz, 1)}°`, true);
       app.requestRender();
       app.bus.emit('fx');
     },
@@ -89,11 +93,10 @@
     },
     cancel() {
       if (this.s) {
-        for (const o of this.s.objs) {
-          const e = M3.toEuler(this.s.R0.get(o.id));
-          Object.assign(o.fx, { rx: e.rx, ry: e.ry, rz: e.rz });
-          this.app.touch(o);
-        }
+        this.s.targets.forEach((t, i) => {
+          const e = M3.toEuler(this.s.R0[i]);
+          this.app.setTurn(t, [e.rx, e.ry, e.rz]);
+        });
       }
       this.s = null;
       this.app.setDraft(null);
@@ -107,7 +110,10 @@
         const [cx, cy] = app.canvas.toScreen(V3D.Rect.cx(b), V3D.Rect.cy(b));
         const r = Math.max(26, Math.min(70, (Math.max(V3D.Rect.w(b), V3D.Rect.h(b)) * app.canvas.zoom) / 4));
         out += `<circle cx="${fmt(cx, 1)}" cy="${fmt(cy, 1)}" r="${fmt(r * 1.25, 1)}" class="ov-orbit"/>`;
-        const axes = R3D.axes(o.fx.rx, o.fx.ry, o.fx.rz).sort((a, c) => a.z - c.z);
+        // The object's axes as seen: its view (or its camera's), turned by its own turn inside the scene.
+        const v = Doc.view3D(o, app.worldMatrix(o), app.doc.scene).fx;
+        const e = M3.toEuler(M3.mul(M3.fromEuler(v.rx, v.ry, v.rz), M3.fromEuler(v.objRx || 0, v.objRy || 0, v.objRz || 0)));
+        const axes = R3D.axes(e.rx, e.ry, e.rz).sort((a, c) => a.z - c.z);
         for (const a of axes) {
           const x2 = cx + a.x * r;
           const y2 = cy + a.y * r;

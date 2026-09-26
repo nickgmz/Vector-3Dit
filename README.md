@@ -1,3 +1,5 @@
+<img src="brand/vector-3dit-128.png" alt="Vector 3Dit logo" width="96" align="right">
+
 # Vector 3Dit
 
 Vector 3Dit is a browser-based vector drawing app, in the spirit of Inkscape, with real 3D tools built in.
@@ -19,8 +21,8 @@ Display fonts and the UI font load from Google Fonts when you're online, and fal
 ### Inkscape extension
 
 The same 3D effects are also available inside Inkscape (1.2 or newer). **Extensions › Vector 3Dit › 3D Editor…** opens a window that
-looks like this app's 3D panel, with tabs for view (trackball and preset views), shape, surface, colors, light, outline and style,
-and a live preview of the objects in place on the page.
+works like this app's 3D panel, with the same tabs (View, Shape, Surface, Colors, Light, Outline and Style), the same scene cameras,
+and a live preview of the objects in place on the page. The app and the extension share one 3D engine, so both give the same result.
 See [`inkscape-extension/`](inkscape-extension/) for install steps.
 
 **📘 Tutorial:** [Using the 3D Editor, step by step](docs/tutorial/) (with screenshots of every tab) ·
@@ -29,8 +31,10 @@ See [`inkscape-extension/`](inkscape-extension/) for install steps.
 ## Quick start
 
 1. **Draw a shape.** Rectangle (R), Ellipse (E), Star/Polygon (S), Pen (P), Pencil (N) or Text (T) — or **Object › Insert shape** for hearts, clouds, gears, arrows and revolve-ready profiles.
-2. **Make it 3D.** Select it and pick **Extrude**, **Revolve** or **Inflate** in the 3D tab (or the context bar).
-3. **Turn it.** Press **O** and drag the shape (Orbit tool), use the trackball in the 3D tab, or click a preset view (isometric left/right/top, off-axis, dimetric…).
+2. **Make it 3D.** Select it and pick **Extrude**, **Revolve** or **Inflate** in the 3D tab (or the context bar). The 3D tab has the same
+   tabs as the Inkscape extension: **View, Shape, Surface, Colors, Light, Outline, Style**.
+3. **Turn it.** Press **O** and drag the shape (Orbit tool), use the trackball on the View tab, or click a preset view (isometric left/right/top, off-axis, dimetric…).
+   Building a scene? **Save…** the view as a **camera** and lock objects to it, so they all share one vantage point.
 4. **Light it.** Press **L** and drag to aim the light, or drag the sun on the light sphere. One scene light is shared by all objects, so everything matches.
 5. **Style it.** Materials (Glossy, Clay, Toon, Poster, Chrome, Gold, Copper, Line art, Wireframe, Flat), bevels, colors per side, outlines and cast shadows.
 6. **Export.** **File › Export** gives SVG (with the 3D settings embedded, so Vector 3Dit can reopen it) or PNG at 1–4×.
@@ -46,13 +50,24 @@ See [`inkscape-extension/`](inkscape-extension/) for install steps.
 | **Flat** | Keeps the art paper-thin and tilts it in space | — (great for laying art on isometric faces) |
 
 - **Rotation:** tilt/turn/spin sliders, drag-to-rotate trackball, on-canvas Orbit tool, 12 preset views, perspective (0–160° field of view).
+- **Scene cameras:** save a view (angles, perspective and turning point) as a named camera and lock objects to it. Turning the
+  scene camera turns every locked object together; switch **Turn** to **This object** to turn one object on its own inside the scene,
+  and use **Push back** (−1000 to 1000 px) to move it deeper into the scene, without disturbing the others. Cameras are saved in the drawing.
+- **Other objects:** while you edit in 3D, the rest of the drawing shows faded (tick **Full color** in the bar above the canvas to see
+  it in its real colors, or untick **Other objects** to hide it).
 - **Lighting:** key light + fill light + ambient, adjustable highlight strength and gloss; shared scene light or per-object light.
 - **Shading:** Flat, Matte, Glossy, Toon (cel bands), Metal, Line art, Wireframe. Optional color bands for a poster look.
 - **Smooth gradients:** curved surfaces are drawn with exact per-face linear gradients (vector Gouraud shading), not bitmaps.
 - **Colors:** front (fill), sides, bevel, back, tinted or custom shadow tone, highlight color. Gradient fills stay on the front face.
 - **Outlines & shadows:** silhouette/crease edge lines or full wireframe; cast shadow onto the page or a soft floor shadow.
+  Lines are drawn above every fill, and hidden only where a face really covers them.
+- **Depth:** extrude depth and inflate puffiness go up to 1000 px.
 - **Groups:** select a group (an imported logo, traced art) and make every shape inside 3D at once; they turn together around the group's center.
 - **Expand to paths:** converts a 3D object into plain editable vector shapes.
+- **Named parts:** every part of a 3D result is named for what it is, its color and where it sits on the object, like
+  **Fill - Light Blue - Front**, **Fill - Dark Blue - Left Side** or **Line - Black - Top** (or with CMYK codes, like
+  **Fill - C75 M49 Y0 K5 - Front**, set on the Style tab). Fills and lines sit in separate **Fills** and **Lines** groups, with the
+  shadow in a **Shadow** group, in exported SVG and after Expand to paths.
 
 ### Drawing & editing
 - Select/transform (move, scale, rotate, Alt-drag to duplicate), node editing (corner/smooth/symmetric nodes, add/delete/break/join, bend segments), pen, pencil with smoothing, text (converted to real outlines), zoom, hand, eyedropper.
@@ -64,7 +79,8 @@ See [`inkscape-extension/`](inkscape-extension/) for install steps.
 
 ### Files
 - Import SVG (paths, basic shapes, text, gradients, CSS classes, transforms), PNG/JPG/WebP, or Vector 3Dit projects — via menu, drag & drop, or paste.
-- Export SVG or PNG (page, drawing or selection; with or without background). Copy the drawing as SVG code to paste into Figma, Illustrator or Inkscape.
+- Export SVG or PNG (page, drawing or selection; with or without background). SVG ids are readable and unique, and every object
+  and part carries an Inkscape label, so the Layers and Objects panel shows the part names. Copy the drawing as SVG code to paste into Figma, Illustrator or Inkscape.
 - Save/open `.vector3dit.json` project files; automatic local autosave; 150-step undo history.
 
 ## Keyboard shortcuts
@@ -89,6 +105,8 @@ signed-distance height field for inflate). The mesh is rotated, projected (ortho
 culled and depth-sorted, then every visible face becomes an SVG `<path>`. Lighting is reduced to one scalar per
 vertex and mapped through a color ramp, so the shading across a triangle is linear — which a single SVG
 `linearGradient` reproduces exactly. Thin same-color strokes hide anti-aliasing seams between faces.
+Edge lines go in their own layer above all the faces: each line is first clipped against the faces drawn after its own
+(hidden-line removal), so outlines stay crisp and on top without showing through a face that covers them.
 
 Known limits: each object is depth-sorted on its own and objects stack in layer order (like Illustrator's 3D effect);
 very detailed shapes are simplified automatically to keep things responsive; boolean operations and text outlines
@@ -107,11 +125,14 @@ No build step or dependencies are required. The app is plain JavaScript modules 
   tools/build.mjs       bundles everything into dist/vector-3dit.html
   inkscape-extension/   the 3D engine ported to Python as an Inkscape extension
   docs/tutorial/        step-by-step tutorial for the Inkscape extension, with screenshots
+  brand/                the logo (PNG in several sizes) and a multi-size .ico
+  favicon.ico           the web app's icon
 ```
 
 ```sh
 node tests/core.test.cjs   # geometry, paths, curve fitting, tracing
 node tests/mesh.test.cjs   # mesh builders and renderer
+node tests/scene.test.cjs  # part names, lines on top, object placement, cameras, named SVG export
 node tools/build.mjs       # rebuild dist/vector-3dit.html
 python3 tests/inkscape.test.py   # Inkscape extension: parity with the JS engine, end-to-end runs, 3D Editor window
 ```

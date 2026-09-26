@@ -463,7 +463,8 @@
       return { type: 'linear', units: 'user', stops, x1: +g.getAttribute('x1'), y1: +g.getAttribute('y1'), x2: +g.getAttribute('x2'), y2: +g.getAttribute('y2'), gt: M2.mul(Pi, gt) };
     };
     const kids = [];
-    const walk = (el, opacity, blur, inh) => {
+    // Named groups (Shadow, Fills, Lines) stay groups; every part keeps its name, like "Fill - Light Blue - Front".
+    const walk = (el, opacity, blur, inh, list) => {
       for (const c of Array.from(el.children)) {
         const tag = c.nodeName;
         if (tag === 'defs') continue;
@@ -479,7 +480,11 @@
             sw: c.hasAttribute('stroke-width') ? parseFloat(c.getAttribute('stroke-width')) : inh.sw,
             join: c.getAttribute('stroke-linejoin') || inh.join,
           };
-          walk(c, opacity * op, b, inh2);
+          if (c.hasAttribute('data-name')) {
+            const inner = [];
+            walk(c, opacity * op, b, inh2, inner);
+            if (inner.length) list.push(Doc.make('group', { children: inner, name: c.getAttribute('data-name') }));
+          } else walk(c, opacity * op, b, inh2, list);
           continue;
         }
         let subs;
@@ -508,10 +513,10 @@
           style.fill = Color.toHexA(fc);
         }
         if (blur) style.blur = blur;
-        kids.push(Doc.make('path', { subs: Path.transform(subs, Pi) }, style));
+        list.push(Doc.make('path', { subs: Path.transform(subs, Pi), name: c.getAttribute('data-name') || '' }, style));
       }
     };
-    walk(doc.documentElement, 1, 0, { sw: 0, join: null });
+    walk(doc.documentElement, 1, 0, { sw: 0, join: null }, kids);
     return Doc.make('group', { children: kids });
   };
 })();

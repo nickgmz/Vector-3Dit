@@ -77,6 +77,7 @@ CSS = ("""
 .v3d .tip label { color: %(text2)s; }
 .v3d .preview-bar { background-color: %(panel)s; border-bottom: 1px solid %(line)s; padding: 6px 10px; }
 .v3d .panel-head { padding: 12px 14px 0 14px; }
+.v3d .brand { color: %(text)s; font-size: 13px; font-weight: 700; }
 .v3d .tabs { padding: 6px; border-bottom: 1px solid %(line)s; }
 .v3d .page { padding: 12px 14px 16px 14px; }
 .v3d .footer { border-top: 1px solid %(line)s; padding: 10px 14px; }
@@ -409,7 +410,7 @@ class Trackball(Gtk.EventBox):
 
     def redraw(self):
         st = self.win.state
-        key = (st["rx"], st["ry"], st["rz"])
+        key = tuple(float(st.get(k) or 0) for k in turn_keys(st))
         if key != self._key:
             self._key = key
             self.image.set_from_pixbuf(svg_pixbuf(trackball_svg(self.SIZE, *key)))
@@ -642,6 +643,23 @@ SHADINGS = [("plastic", "Glossy"), ("matte", "Matte"), ("toon", "Toon"), ("metal
             ("lineart", "Line art"), ("wire", "Wireframe")]
 PROFILES = [("round", "Round"), ("pillow", "Pillow"), ("dome", "Dome"), ("soft", "Soft"), ("cone", "Sharp")]
 PLAIN_SHADINGS = ("flat", "lineart", "wire")
+CAMERA_TURN = ("rx", "ry", "rz")
+OBJECT_TURN = ("obj_rx", "obj_ry", "obj_rz")
+UI_ONLY = ("shared_light", "turn_mode")  # window settings that are never written to the objects
+LOGO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vector3dit_logo.png")
+
+
+def placement_shown(s):
+    """The object's own turn and push back apply inside a scene camera (and stay visible while they're in use)."""
+    return bool(s.get("camera")) or any(s.get(k) for k in OBJECT_TURN + ("obj_push",))
+
+
+def object_mode(s):
+    return s.get("turn_mode") == "object" and placement_shown(s)
+
+
+def turn_keys(s):
+    return OBJECT_TURN if object_mode(s) else CAMERA_TURN
 
 
 def to_rgba(hex_color):
@@ -677,6 +695,7 @@ class EditorWindow(Gtk.Window):
         self.state.setdefault("shared_light", True)
         self.state.setdefault("cameras", {})
         self.state.setdefault("camera", "")
+        self.state.setdefault("turn_mode", "camera")
         self.touched = set()
         self.render_cb = render_cb
         self.context = context
@@ -719,6 +738,11 @@ class EditorWindow(Gtk.Window):
         except Exception:  # noqa: BLE001
             pass
         self.set_default_size(max(900, width), max(560, height))
+        if os.path.exists(LOGO):
+            try:
+                self.set_icon_from_file(LOGO)
+            except GLib.Error:
+                pass
         self.set_position(Gtk.WindowPosition.CENTER)
         self.set_keep_above(True)
         self.connect("delete-event", lambda *a: self.finish(False) or True)
@@ -927,6 +951,12 @@ class EditorWindow(Gtk.Window):
     def build_preview(self, count):
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         bar = styled(Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8), "preview-bar")
+        if os.path.exists(LOGO):
+            try:
+                bar.pack_start(Gtk.Image.new_from_pixbuf(GdkPixbuf.Pixbuf.new_from_file_at_size(LOGO, 22, 22)), False, False, 0)
+            except GLib.Error:
+                pass
+        bar.pack_start(label("Vector 3Dit", "brand"), False, False, 0)
         self.status = label("%d object%s · drag to turn · right-drag to pan · scroll to zoom"
                             % (count, "" if count == 1 else "s"), "muted")
         self.status.set_ellipsize(3)
@@ -1096,7 +1126,8 @@ class EditorWindow(Gtk.Window):
         name = self.state.get("camera")
         if name:
             self.cam_note.set_text("Locked to the camera \u201c%s\u201d. Every object locked to it is seen from the same "
-                                   "point, with the same angles and perspective. Turning here turns them all." % name)
+                                   "point, with the same angles and perspective. Turning the scene camera turns them all; "
+                                   "pick This object to turn or push back only the selection." % name)
 
     def on_camera_combo(self, combo):
         if self._syncing:
@@ -1129,6 +1160,9 @@ class EditorWindow(Gtk.Window):
     def build_view(self):
         page = self.page()
         page.pack_start(self.build_camera(), False, False, 0)
+        turn = self.seg("turn_mode", [("camera", "Scene camera", "Turn the camera: every object locked to it turns along"),
+                                      ("object", "This object", "Turn only the selected objects, inside the scene")])
+        page.pack_start(self.when(self.row("Turn", turn), placement_shown), False, False, 0)
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self.trackball = Trackball(self)
         row.pack_start(self.trackball, False, False, 0)
@@ -1144,11 +1178,17 @@ class EditorWindow(Gtk.Window):
         side.set_valign(Gtk.Align.CENTER)
         row.pack_start(side, True, True, 0)
         page.pack_start(row, False, False, 0)
-        page.pack_start(self.slider("rx", "Tilt", -180, 180, 1, "°", "x", "Rotate around the horizontal axis (X)"), False, False, 0)
-        page.pack_start(self.slider("ry", "Turn", -180, 180, 1, "°", "y", "Rotate around the vertical axis (Y)"), False, False, 0)
-        page.pack_start(self.slider("rz", "Spin", -180, 180, 1, "°", "z", "Rotate within the drawing plane (Z)"), False, False, 0)
+        for keys, pred in ((CAMERA_TURN, lambda s: not object_mode(s)), (OBJECT_TURN, object_mode)):
+            for key, text, axis, tip in zip(keys, ("Tilt", "Turn", "Spin"), "xyz",
+                                            ("Rotate around the horizontal axis (X)", "Rotate around the vertical axis (Y)",
+                                             "Rotate within the drawing plane (Z)")):
+                page.pack_start(self.when(self.slider(key, text, -180, 180, 1, "°", axis, tip), pred), False, False, 0)
         page.pack_start(self.slider("persp", "Perspective", 0, 160, 1, "°",
                                     tip="Camera field of view. 0 = no perspective (parallel lines stay parallel)."), False, False, 0)
+        page.pack_start(self.when(self.slider("obj_push", "Push back", -1000, 1000, 1, "px",
+                                              tip="Move the selected objects deeper into the scene (below 0: toward you), "
+                                                  "without moving the camera. It shows with Perspective above 0."),
+                                  placement_shown), False, False, 0)
         page.pack_start(self.sub("Preset views"), False, False, 0)
         items = [(k, t, svg_image('<svg %s width="30" height="30" viewBox="0 0 30 30">%s</svg>'
                                   % (SVG_NS, cube_markup(*E.PRESETS[k], 30)))) for k, t in PRESET_NAMES]
@@ -1163,7 +1203,7 @@ class EditorWindow(Gtk.Window):
         has_bevel = lambda s: s.get("bevel", "none") != "none"  # noqa: E731
 
         ex = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=9)
-        ex.pack_start(self.slider("depth", "Depth", 0, 400, 1, "px"), False, False, 0)
+        ex.pack_start(self.slider("depth", "Depth", 0, 1000, 1, "px"), False, False, 0)
         ex.pack_start(self.toggle("caps", "Solid (end caps)", "Turn off for a hollow tube"), False, False, 0)
         ex.pack_start(self.row("Bevel", self.bevel_picker()), False, False, 0)
         for w in (self.slider("bevel_w", "Bevel width", 0, 60, 0.5, "px"), self.slider("bevel_h", "Bevel height", 0, 60, 0.5, "px"),
@@ -1188,7 +1228,7 @@ class EditorWindow(Gtk.Window):
         self.shape_stack.add_named(rv, "revolve")
 
         inf = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=9)
-        inf.pack_start(self.slider("inf_height", "Puffiness", 0, 300, 1, "px"), False, False, 0)
+        inf.pack_start(self.slider("inf_height", "Puffiness", 0, 1000, 1, "px"), False, False, 0)
         inf.pack_start(self.row("Profile", self.select("inf_profile", PROFILES)), False, False, 0)
         inf.pack_start(self.slider("inf_spread", "Roundness", 5, 100, 1, "%",
                                    tip="How far in from the edge the surface keeps rising"), False, False, 0)
@@ -1347,6 +1387,13 @@ class EditorWindow(Gtk.Window):
                                   lambda s: s.get("edges") == "outline"), False, False, 0)
         page.pack_start(self.sub("Opacity"), False, False, 0)
         page.pack_start(self.slider("opacity", "Opacity", 0, 100, 1, "%"), False, False, 0)
+        page.pack_start(self.sub("Names"), False, False, 0)
+        page.pack_start(self.tip("Every part of the result is named for what it is, its color and where it sits, like "
+                                 "\u201cFill - Light Blue - Front\u201d or \u201cLine - Black - Top\u201d. Fills and lines are "
+                                 "kept in separate groups. Find them under Object \u203a Layers and Objects."), False, False, 0)
+        page.pack_start(self.row("Colors as", self.seg("name_colors", [("names", "Names", "Like \u201cLight Blue\u201d"),
+                                                                       ("cmyk", "CMYK codes", "Like \u201cC75 M49 Y0 K5\u201d")])),
+                        False, False, 0)
         return page
 
     # ---- state
@@ -1371,7 +1418,7 @@ class EditorWindow(Gtk.Window):
                 self.state.get("shadow_tint") if self.state.get("shadow_tint") not in ("auto", "black", None) else "#2a2350")
         for key, value in values.items():
             self.state[key] = value
-            if key != "shared_light":
+            if key not in UI_ONLY:
                 self.touched.add(key)
         cam = (self.state.get("cameras") or {}).get(self.state.get("camera") or "")
         if cam is not None and any(k in values for k in ("rx", "ry", "rz", "persp")):
@@ -1434,14 +1481,18 @@ class EditorWindow(Gtk.Window):
         self.set_values(values)
 
     def set_rotation(self, rx, ry, rz):
-        self.set_values({"rx": wrap180(rx), "ry": wrap180(ry), "rz": wrap180(rz)})
+        """Sets the turn being edited: the camera's (or the object's own view), or the object's turn in its scene."""
+        self.set_values(dict(zip(turn_keys(self.state), (wrap180(rx), wrap180(ry), wrap180(rz)))))
+
+    def turn_matrix(self):
+        return E.from_euler(*[float(self.state.get(k) or 0) for k in turn_keys(self.state)])
 
     def nudge(self, drx, dry):
-        R = E.m_mul(E.m_mul(E.rot_x(drx), E.rot_y(dry)), E.from_euler(self.state["rx"], self.state["ry"], self.state["rz"]))
+        R = E.m_mul(E.m_mul(E.rot_x(drx), E.rot_y(dry)), self.turn_matrix())
         self.set_rotation(*E.to_euler(R))
 
     def begin_turn(self, x, y):
-        self.drag = {"x": x, "y": y, "R0": E.from_euler(self.state["rx"], self.state["ry"], self.state["rz"])}
+        self.drag = {"x": x, "y": y, "R0": self.turn_matrix()}
         return True
 
     def turn_to(self, x, y, mods, speed):
@@ -1695,6 +1746,10 @@ def _autotest(win, script):
         win.delete_camera()
     if script.get("set"):
         win.set_values(script["set"])
+    for dx, dy in script.get("drag_after", []):  # a drag after the settings above (e.g. in This object mode)
+        win.begin_turn(0, 0)
+        win.turn_to(dx, dy, 0, 0.8)
+        win.end_turn()
     if script.get("tab"):
         win.show_tab(script["tab"])
     if script.get("bevel_menu"):

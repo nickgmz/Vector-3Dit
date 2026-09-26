@@ -11,7 +11,7 @@ Every picture is a real screenshot of the editor.
 **Lessons:** [1 Open the editor](#1-open-the-3d-editor) · [2 The window](#2-find-your-way-around-the-window) ·
 [3 Turn it](#3-turn-it-in-space-view-tab) · [4 Shape](#4-choose-how-it-becomes-3d-shape-tab) ·
 [5 Surface](#5-pick-a-material-surface-tab) · [6 Colors](#6-color-each-side-colors-tab) · [7 Light](#7-aim-the-light-light-tab) ·
-[8 Outline & shadow](#8-add-lines-and-a-shadow-outline-tab) · [9 Style](#9-fill-stroke-and-opacity-style-tab) ·
+[8 Outline & shadow](#8-add-lines-and-a-shadow-outline-tab) · [9 Style](#9-fill-stroke-opacity-and-names-style-tab) ·
 [10 Groups](#10-groups-and-several-objects) · [11 Cameras](#11-one-camera-for-the-whole-scene) · [12 Edit later](#12-apply-edit-later-or-undo) · [13 Shortcuts](#13-shortcuts)
 
 ---
@@ -34,7 +34,7 @@ Every picture is a real screenshot of the editor.
 | --- | --- |
 | **Kind** (top of the panel) | Flat, Extrude, Revolve or Inflate: how the flat shape becomes 3D. |
 | **Tabs** | View, Shape, Surface, Colors, Light, Outline and Style. Each holds one group of tools. |
-| **Camera** (top of the View tab) | Save the view and lock several objects to it, so a whole scene shares one vantage point ([lesson 11](#11-one-camera-for-the-whole-scene)). |
+| **Camera** (top of the View tab) | Save the view and lock several objects to it, so a whole scene shares one vantage point. Once locked, **Turn** picks the scene camera or just this object ([lesson 11](#11-one-camera-for-the-whole-scene)). |
 | **Trackball** | The little cube shows which way the object faces. Drag it to turn. |
 | **Preview** (left) | Your page, with the objects in 3D exactly where they'll land. The rest of the drawing is faded behind them. |
 | **Preview tools** (top) | **Other objects** shows or hides the rest of the drawing, **Full color** shows it in its real colors, and **Fit selection** / **Fit page** zoom. |
@@ -59,7 +59,7 @@ Pick a kind at the top of the panel, then open the **Shape** tab. It shows only 
 
 ### Extrude and bevel
 
-1. With **Extrude** picked, set the **Depth**. Turn off **Solid** for a hollow tube.
+1. With **Extrude** picked, set the **Depth** (up to 1000 px). Turn off **Solid** for a hollow tube.
 2. Click the **Bevel** box to open the profiles.
 3. Pick one, like **Round**. Then set the bevel's width, height and smoothness, front or both sides, inward or outward.
 
@@ -76,7 +76,7 @@ Pick a kind at the top of the panel, then open the **Shape** tab. It shows only 
 ### Inflate
 
 1. Pick **Inflate** to puff the shape up like a balloon.
-2. **Puffiness** sets the height. **Profile** sets the curve: Round, Pillow, Dome, Soft or Sharp.
+2. **Puffiness** sets the height (up to 1000 px). **Profile** sets the curve: Round, Pillow, Dome, Soft or Sharp.
 3. Raise **Detail** for smoother curves (larger files).
 
 ![A circle inflated into a ball](images/04-inflate.png)
@@ -114,9 +114,12 @@ With several objects selected, a color you set applies to all of them.
 2. **Shadow:** Cast throws a shadow onto the page, away from the light. Floor adds a soft shadow underneath.
 3. Set the shadow's opacity, softness, distance and color.
 
+> Lines are always drawn **on top of the fills**, in their own group. A line is hidden only where a face really covers it,
+> so outlines stay crisp and never disappear behind the sides next to them.
+
 ![The Outline tab with an outline and a cast shadow](images/08-outline.png)
 
-## 9. Fill, stroke and opacity (Style tab)
+## 9. Fill, stroke, opacity and names (Style tab)
 
 1. **Fill** is the shape's color, the same as Front on the Colors tab.
 2. **Stroke** draws lines around the 3D object. Pick a color, or **None** to remove it. Set its width, and whether it draws the outline or every edge.
@@ -129,6 +132,15 @@ With several objects selected, a color you set applies to all of them.
 > so **Remove 3D** gives it back with them.
 
 ![The Style tab with the color picker open for the stroke](images/09-style.png)
+
+### Names
+
+Every part of the result gets a name that says what it is, its color and where it sits on the object:
+**Fill - Light Blue - Front**, **Fill - Dark Blue - Left Side**, **Line - Black - Top**… You'll find them under
+**Object › Layers and Objects**. **Colors as** picks how colors are named: **Names** (Blue, Light Blue, Dark Gray…) or
+**CMYK codes** (like C75 M49 Y0 K5). A color with no simple name gets its CMYK code either way.
+
+![The Style tab: fill, stroke, opacity and the Names section](images/09-names.png)
 
 ## 10. Groups and several objects
 
@@ -148,16 +160,29 @@ Save the view as a **camera** and lock the objects to it.
 3. To add more objects later, select them, open the 3D Editor and pick the camera from the **Camera** list.
 
 Every object locked to a camera shares its angles, its turning point and its perspective, so all the lines run to the same vanishing points.
-**Turning one locked object turns them all.** The preview shows the whole scene moving together, and Apply updates every locked object in the drawing.
+With **Turn** on **Scene camera**, **turning one locked object turns them all.** The preview shows the whole scene moving together, and Apply updates every locked object in the drawing.
+
+![The View tab locked to the camera "Street": a heart, a box and a ball seen from one vantage point](images/11-camera.png)
+
+### Place one object inside the scene
+
+To line objects up without redoing the scene, move just the selection and leave the camera alone:
+
+1. Select the object and open the 3D Editor. It's locked to its camera, so the View tab shows **Turn**.
+2. Click **This object**. Now the trackball and the Tilt, Turn and Spin sliders turn only the selection, inside the scene.
+3. Drag **Push back** to move it deeper into the scene, or below 0 to bring it toward you. It shows with **Perspective** above 0.
+
+Click **Scene camera** to go back to turning the whole scene. The other objects on the camera don't move.
+
+![This object: the heart turned on its own and pushed back, while the box and the ball keep the camera's view](images/11-object.png)
 
 > Pick **Own view (not locked)** to unlock the selection, or **Delete** to remove the camera. Unlocked objects keep exactly how they look.
 > Cameras are saved in the Inkscape file, so they're still there next time.
 
-![The View tab locked to the camera "Street": a heart, a box and a ball seen from one vantage point](images/11-camera.png)
-
 ## 12. Apply, edit later, or undo
 
-- **Apply** puts the result in your drawing as a group of plain vector shapes. You can move, scale and export it like anything else.
+- **Apply** puts the result in your drawing as a group of plain vector shapes, named like **3D Extrude: Heart**. You can move, scale and export it like anything else.
+  Inside it, **Shadow**, **Fills** and **Lines** hold the parts, each one named for what it is, its color and where it sits (see [Names](#names)).
 - **Edit it again:** select the 3D object and open the 3D Editor. It opens with that object's current settings.
 - **Undo:** **Ctrl+Z** in Inkscape undoes the whole Apply in one step.
 - **Back to flat:** **Extensions › Vector 3Dit › Remove 3D** puts the original shape back, with its id, fill and stroke.

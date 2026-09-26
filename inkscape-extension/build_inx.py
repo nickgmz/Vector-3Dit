@@ -145,6 +145,8 @@ EXTRAS_PAGE = page("extras", "Outlines & shadow", [
     num("shadow_dist", "Shadow distance (px)", 40, 0, 1000),
     color("shadow_color", "Shadow color", "#10121a"),
     num("seam", "Seam fix (px)", 1, 0, 3, tip="Hairline strokes that hide gaps between faces"),
+    choice("name_colors", "Name the parts' colors as", [("names", "Color names (Light Blue)"), ("cmyk", "CMYK codes (C75 M49 Y0 K5)")],
+           "names", tip="Each part is named for what it is, its color and where it sits, e.g. Fill - Light Blue - Front"),
 ])
 
 HELP_PAGE = page("help", "Help", [
